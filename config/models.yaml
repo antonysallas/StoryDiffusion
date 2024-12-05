@@ -1,6 +1,6 @@
-Juggernaut: 
+Juggernaut:
   path: "https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/blob/main/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
-  single_files: true   ### if true, is a civitai model
+  single_files: true ### if true, is a civitai model
   use_safetensors: true
 
 RealVision:
@@ -9,6 +9,8 @@ RealVision:
   use_safetensors: true
 
 SDXL:
+  # path: "stabilityai/stable-diffusion-3.5-medium"
+  # path: "stabilityai/stable-diffusion-3.5-large"
   path: "stabilityai/stable-diffusion-xl-base-1.0"
   single_files: false
   use_safetensors: true

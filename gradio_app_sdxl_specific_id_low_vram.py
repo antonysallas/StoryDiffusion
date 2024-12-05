@@ -1,7 +1,11 @@
-from this import d
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# from this import d
 import gradio as gr
 import numpy as np
 import torch
+
 import gc
 import copy
 import os
@@ -36,16 +40,48 @@ STYLE_NAMES = list(styles.keys())
 DEFAULT_STYLE_NAME = "Japanese Anime"
 global models_dict
 
+dtype = torch.float16
+
+def clear_memory():
+    """Clear device memory safely"""
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            gc.collect()
+            torch.mps.empty_cache()
+        gc.collect()  # Always run general garbage collection
+    except Exception as e:
+        print(f"Error clearing memory: {e}")
+
+def initialize_device():
+    """Initialize device with proper error handling"""
+    global dtype
+
+    clear_memory()
+    try:
+        if torch.cuda.is_available():
+            dtype = torch.float16
+            return "cuda"
+        elif torch.backends.mps.is_available():
+            dtype = torch.float32
+            return "mps"
+        else:
+            dtype = torch.float32
+            return "cpu"
+    except Exception as e:
+        print(f"Error initializing device: {e}")
+        dtype = torch.float32
+        return "cpu"
+    finally:
+        clear_memory()
+
 models_dict = get_models_dict()
 
 # Automatically select the device
-device = (
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available() else "cpu"
-)
-print(f"@@device:{device}")
+device = initialize_device()
 
+print(f"@@device:{device}")
 
 # check if the file exists locally at a specified path before downloading it.
 # if the file doesn't exist, it uses `hf_hub_download` to download the file
@@ -62,6 +98,10 @@ if not os.path.exists(photomaker_local_path):
     )
 else:
     photomaker_path = photomaker_local_path
+
+# Initialize model with correct parameters
+# model_info = models_dict["Unstable"]
+# pipe = load_models(model_info, device, photomaker_path)
 
 MAX_SEED = np.iinfo(np.int32).max
 
@@ -189,6 +229,7 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
                     for tensor in self.id_bank[character][cur_step]
                 ]
         # 判断随机数是否大于0.5
+        clear_memory()
         if cur_step < 1:
             hidden_states = self.__call2__(
                 attn, hidden_states, None, attention_mask, temb
@@ -339,6 +380,7 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
+        clear_memory()
         hidden_states = F.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
@@ -514,7 +556,7 @@ description = r"""
 
 article = r"""
 
-If StoryDiffusion is helpful, please help to ⭐ the <a href='https://github.com/HVision-NKU/StoryDiffusion' target='_blank'>Github Repo</a>. Thanks! 
+If StoryDiffusion is helpful, please help to ⭐ the <a href='https://github.com/HVision-NKU/StoryDiffusion' target='_blank'>Github Repo</a>. Thanks!
 [![GitHub Stars](https://img.shields.io/github/stars/HVision-NKU/StoryDiffusion?style=social)](https://github.com/HVision-NKU/StoryDiffusion)
 ---
 📝 **Citation**
@@ -530,7 +572,7 @@ If our work is useful for your research, please consider citing:
 ```
 📋 **License**
 <br>
-Apache-2.0 LICENSE. 
+Apache-2.0 LICENSE.
 
 📧 **Contact**
 <br>
@@ -568,24 +610,36 @@ width = 768
 global pipe
 global sd_model_path
 pipe = None
+# Initialize model with correct parameters
+
 sd_model_path = models_dict["Unstable"]["path"]  # "SG161222/RealVisXL_V4.0"
 single_files = models_dict["Unstable"]["single_files"]
+use_safetensors = models_dict["Unstable"]["use_safetensors"]
+
 ### LOAD Stable Diffusion Pipeline
 if single_files:
     pipe = StableDiffusionXLPipeline.from_single_file(
-        sd_model_path, torch_dtype=torch.float16
+        sd_model_path, torch_dtype=dtype
     )
 else:
     pipe = StableDiffusionXLPipeline.from_pretrained(
-        sd_model_path, torch_dtype=torch.float16, use_safetensors=False
+        sd_model_path, torch_dtype=dtype, use_safetensors=use_safetensors
     )
 pipe = pipe.to(device)
+pipe.enable_attention_slicing()
+
+# Device-specific optimizations
+if device == "mps":
+    pipe.enable_attention_slicing(slice_size="auto")
+elif device == "cuda":
+    pipe.enable_sequential_cpu_offload()
+    pipe.enable_model_cpu_offload()
+
 pipe.enable_freeu(s1=0.6, s2=0.4, b1=1.1, b2=1.2)
 # pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 pipe.scheduler.set_timesteps(50)
 pipe.enable_vae_slicing()
-if device != "mps":
-    pipe.enable_model_cpu_offload()
+
 unet = pipe.unet
 cur_model_type = "Unstable" + "-" + "original"
 ### Insert PairedAttention
@@ -750,18 +804,21 @@ def process_generation(
             attn_processor.id_bank = {}
             attn_processor.id_length = id_length
             attn_processor.total_length = id_length + 1
-    gc.collect()
-    torch.cuda.empty_cache()
+    # gc.collect()
+    # torch.cuda.empty_cache()
+    clear_memory()
     if cur_model_type != _sd_type + "-" + _model_type:
         # apply the style template
         ##### load pipe
         del pipe
-        gc.collect()
-        if device == "cuda":
-            torch.cuda.empty_cache()
+        # gc.collect()
+        # if device == "cuda":
+        #     torch.cuda.empty_cache()
+        clear_memory()
         model_info = models_dict[_sd_type]
         model_info["model_type"] = _model_type
         pipe = load_models(model_info, device=device, photomaker_path=photomaker_path)
+        clear_memory()
         set_attention_processor(pipe.unet, id_length_, is_ipadapter=False)
         ##### ########################
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
@@ -825,8 +882,9 @@ def process_generation(
     print(character_index_dict)
     print(invert_character_index_dict)
     # real_prompts = prompts[id_length:]
-    if device == "cuda":
-        torch.cuda.empty_cache()
+    # if device == "cuda":
+    #     torch.cuda.empty_cache()
+    clear_memory()
     write = True
     cur_step = 0
 
@@ -1342,5 +1400,18 @@ with gr.Blocks(css=css) as demo:
     )
     gr.Markdown(article)
 
+if __name__ == "__main__":
+    try:
+        demo.queue(concurrency_count=1, max_size=10)  # Enable queue
+        demo.launch(
+            server_name="0.0.0.0",
+            server_port=7860,
+            share=False,
+            enable_queue=True
+        )
+    except Exception as e:
+        print(f"Launch error: {e}")
+        # Fallback to basic launch
+        demo.launch()
 
-demo.launch(server_name="0.0.0.0", share=True)
+# demo.launch(server_name="0.0.0.0", share=True)

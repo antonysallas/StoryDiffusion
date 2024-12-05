@@ -1,15 +1,20 @@
-gradio==4.22.0
-xformers==0.0.20
+# Core ML packages
 torch==2.0.1
 torchvision==0.15.2
-diffusers==0.25.0
-transformers==4.36.2
-huggingface-hub==0.20.2
-spaces==0.19.4
-numpy
-accelerate
-safetensors
-omegaconf
-peft
-httpx==0.27.0
+numpy==1.24.3
+
+# Hugging Face ecosystem
+transformers==4.35.2
+diffusers==0.24.0
+huggingface-hub==0.19.4
+accelerate==0.21.0
+peft==0.7.1
 safetensors==0.4.0
+
+# Model optimization
+xformers==0.0.20
+
+# UI and utilities
+gradio==4.22.0
+omegaconf==2.3.0
+httpx==0.27.0
