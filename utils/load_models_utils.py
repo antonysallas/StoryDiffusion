@@ -10,11 +10,11 @@ def get_models_dict():
         try:
             # 解析YAML文件内容
             data = yaml.safe_load(stream)
-            
+
             # 此时 'data' 是一个Python字典，里面包含了YAML文件的所有数据
             print(data)
             return data
-            
+
         except yaml.YAMLError as exc:
             # 如果在解析过程中发生了错误，打印异常信息
             print(exc)
@@ -28,7 +28,7 @@ def load_models(model_info,device,photomaker_path):
     if model_type == "original":
         if single_files:
             pipe = StableDiffusionXLPipeline.from_single_file(
-                path, 
+                path,
                 torch_dtype=torch.float16
             )
         else:
@@ -38,7 +38,7 @@ def load_models(model_info,device,photomaker_path):
         if single_files:
             print("loading from a single_files")
             pipe = PhotoMakerStableDiffusionXLPipeline.from_single_file(
-                path, 
+                path,
                 torch_dtype=torch.float16
             )
         else:
