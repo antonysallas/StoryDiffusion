@@ -96,3 +96,5 @@ results/
 fonts/agency.ttf
 fonts/calibri.ttf
 data/
+
+*.bak

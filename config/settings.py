@@ -7,8 +7,8 @@ from typing import Optional
 # Model Settings
 DEFAULT_DTYPE = "float32"
 LOCAL_DIR = Path("data/")
-PHOTOMAKER_FILENAME = "photomaker-v1.bin"
-HF_REPO_ID = "TencentARC/PhotoMaker"
+PHOTOMAKER_FILENAME = "photomaker-v2.bin"
+HF_REPO_ID = "TencentARC/PhotoMaker-V2"
 
 
 @dataclass

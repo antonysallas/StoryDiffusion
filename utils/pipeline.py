@@ -1,22 +1,13 @@
-from typing import Any, Callable, Dict, List, Optional, Union, Tuple
-from collections import OrderedDict
-import os
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
 import PIL
-import numpy as np
-
 import torch
-from torchvision import transforms as T
-
-from safetensors import safe_open
-from huggingface_hub.utils import validate_hf_hub_args
-from transformers import CLIPImageProcessor, CLIPTokenizer
 from diffusers import StableDiffusionXLPipeline
 from diffusers.pipelines.stable_diffusion_xl import StableDiffusionXLPipelineOutput
-from diffusers.utils import (
-    _get_model_file,
-    is_transformers_available,
-    logging,
-)
+from diffusers.utils import _get_model_file
+from huggingface_hub.utils import validate_hf_hub_args
+from safetensors import safe_open
+from transformers import CLIPImageProcessor
 
 from . import PhotoMakerIDEncoder
 
@@ -34,8 +25,8 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
         self,
         pretrained_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]],
         weight_name: str,
-        subfolder: str = '',
-        trigger_word: str = 'img',
+        subfolder: str = "",
+        trigger_word: str = "img",
         **kwargs,
     ):
         """
@@ -85,7 +76,8 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                 resume_download=resume_download,
                 proxies=proxies,
                 local_files_only=local_files_only,
-                token=token,
+                # token parameter not supported in diffusers 0.24.0
+                # token=token,
                 revision=revision,
                 subfolder=subfolder,
                 user_agent=user_agent,
@@ -105,11 +97,15 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
 
         keys = list(state_dict.keys())
         if keys != ["id_encoder", "lora_weights"]:
-            raise ValueError("Required keys are (`id_encoder` and `lora_weights`) missing from the state dict.")
+            raise ValueError(
+                "Required keys are (`id_encoder` and `lora_weights`) missing from the state dict."
+            )
 
         self.trigger_word = trigger_word
         # load finetuned CLIP image encoder and fuse module here if it has not been registered to the pipeline yet
-        print(f"Loading PhotoMaker components [1] id_encoder from [{pretrained_model_name_or_path_or_dict}]...")
+        print(
+            f"Loading PhotoMaker components [1] id_encoder from [{pretrained_model_name_or_path_or_dict}]..."
+        )
         id_encoder = PhotoMakerIDEncoder()
         id_encoder.load_state_dict(state_dict["id_encoder"], strict=True)
         id_encoder = id_encoder.to(self.device, dtype=self.unet.dtype)
@@ -117,7 +113,9 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
         self.id_image_processor = CLIPImageProcessor()
 
         # load lora into models
-        print(f"Loading PhotoMaker components [2] lora_weights from [{pretrained_model_name_or_path_or_dict}]")
+        print(
+            f"Loading PhotoMaker components [2] lora_weights from [{pretrained_model_name_or_path_or_dict}]"
+        )
         self.load_lora_weights(state_dict["lora_weights"], adapter_name="photomaker")
 
         # Add trigger word token
@@ -125,7 +123,6 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
             self.tokenizer.add_tokens([self.trigger_word], special_tokens=True)
 
         self.tokenizer_2.add_tokens([self.trigger_word], special_tokens=True)
-
 
     def encode_prompt_with_trigger_word(
         self,
@@ -153,7 +150,9 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
         # Define tokenizers and text encoders
         tokenizers = [self.tokenizer, self.tokenizer_2] if self.tokenizer is not None else [self.tokenizer_2]
         text_encoders = (
-            [self.text_encoder, self.text_encoder_2] if self.text_encoder is not None else [self.text_encoder_2]
+            [self.text_encoder, self.text_encoder_2]
+            if self.text_encoder is not None
+            else [self.text_encoder_2]
         )
 
         if prompt_embeds is None:
@@ -161,7 +160,7 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
             prompt_embeds_list = []
             prompts = [prompt, prompt_2]
             for prompt, tokenizer, text_encoder in zip(prompts, tokenizers, text_encoders):
-                input_ids = tokenizer.encode(prompt) # TODO: batch encode
+                input_ids = tokenizer.encode(prompt)  # TODO: batch encode
                 clean_index = 0
                 clean_input_ids = []
                 class_token_index = []
@@ -188,8 +187,11 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
 
                 # Expand the class word token and corresponding mask
                 class_token = clean_input_ids[class_token_index]
-                clean_input_ids = clean_input_ids[:class_token_index] + [class_token] * num_id_images + \
-                    clean_input_ids[class_token_index+1:]
+                clean_input_ids = (
+                    clean_input_ids[:class_token_index]
+                    + [class_token] * num_id_images
+                    + clean_input_ids[class_token_index + 1 :]
+                )
 
                 # Truncation or padding
                 max_len = tokenizer.model_max_length
@@ -200,8 +202,10 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                         max_len - len(clean_input_ids)
                     )
 
-                class_tokens_mask = [True if class_token_index <= i < class_token_index+num_id_images else False \
-                     for i in range(len(clean_input_ids))]
+                class_tokens_mask = [
+                    True if class_token_index <= i < class_token_index + num_id_images else False
+                    for i in range(len(clean_input_ids))
+                ]
 
                 clean_input_ids = torch.tensor(clean_input_ids, dtype=torch.long).unsqueeze(0)
                 class_tokens_mask = torch.tensor(class_tokens_mask, dtype=torch.bool).unsqueeze(0)
@@ -219,7 +223,7 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
             prompt_embeds = torch.concat(prompt_embeds_list, dim=-1)
 
         prompt_embeds = prompt_embeds.to(dtype=self.text_encoder_2.dtype, device=device)
-        class_tokens_mask = class_tokens_mask.to(device=device) # TODO: ignoring two-prompt case
+        class_tokens_mask = class_tokens_mask.to(device=device)  # TODO: ignoring two-prompt case
 
         return prompt_embeds, pooled_prompt_embeds, class_tokens_mask
 
@@ -260,11 +264,11 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         # Added parameters (for PhotoMaker)
         input_id_images: PipelineImageInput = None,
-        start_merge_step: int = 0, # TODO: change to `style_strength_ratio` in the future
+        start_merge_step: int = 0,  # TODO: change to `style_strength_ratio` in the future
         class_tokens_mask: Optional[torch.LongTensor] = None,
         prompt_embeds_text_only: Optional[torch.FloatTensor] = None,
         pooled_prompt_embeds_text_only: Optional[torch.FloatTensor] = None,
-        nc_flag = False,
+        nc_flag=False,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -369,7 +373,7 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                     prompt_embeds=prompt_embeds,
                     pooled_prompt_embeds=pooled_prompt_embeds,
                     class_tokens_mask=class_tokens_mask,
-                    nc_flag = nc_flag,
+                    nc_flag=nc_flag,
                 )
 
                 # 4. Encode input prompt without the trigger word for delayed conditioning
@@ -383,7 +387,7 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                 (
                     prompt_embeds_text_only,
                     negative_prompt_embeds,
-                    pooled_prompt_embeds_text_only, # TODO: replace the pooled_prompt_embeds with text only prompt
+                    pooled_prompt_embeds_text_only,  # TODO: replace the pooled_prompt_embeds with text only prompt
                     negative_pooled_prompt_embeds,
                 ) = self.encode_prompt(
                     prompt=prompt_text_only,
@@ -402,9 +406,13 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                 # 5. Prepare the input ID images
                 dtype = next(self.id_encoder.parameters()).dtype
                 if not isinstance(input_id_images[0], torch.Tensor):
-                    id_pixel_values = self.id_image_processor(input_id_images, return_tensors="pt").pixel_values
+                    id_pixel_values = self.id_image_processor(
+                        input_id_images, return_tensors="pt"
+                    ).pixel_values
 
-                id_pixel_values = id_pixel_values.unsqueeze(0).to(device=device, dtype=dtype) # TODO: multiple prompts
+                id_pixel_values = id_pixel_values.unsqueeze(0).to(
+                    device=device, dtype=dtype
+                )  # TODO: multiple prompts
 
                 # duplicate text embeddings for each generation per prompt, using mps friendly method
                 if not nc_flag:
@@ -434,20 +442,20 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
             self.scheduler.set_timesteps(num_inference_steps, device=device)
             timesteps = self.scheduler.timesteps
 
-            negative_prompt_embeds = torch.cat(negative_prompt_embeds_arr ,dim =0)
+            negative_prompt_embeds = torch.cat(negative_prompt_embeds_arr, dim=0)
             print(negative_prompt_embeds.shape)
             if not nc_flag:
-                prompt_embeds = torch.cat(prompt_embeds_arr ,dim = 0)
+                prompt_embeds = torch.cat(prompt_embeds_arr, dim=0)
                 print(prompt_embeds.shape)
-                pooled_prompt_embeds = torch.cat(pooled_prompt_embeds_arr,dim = 0)
+                pooled_prompt_embeds = torch.cat(pooled_prompt_embeds_arr, dim=0)
                 print(pooled_prompt_embeds.shape)
 
-            prompt_embeds_text_only = torch.cat(prompt_embeds_text_only_arr   ,dim = 0)
+            prompt_embeds_text_only = torch.cat(prompt_embeds_text_only_arr, dim=0)
             print(prompt_embeds_text_only.shape)
-            pooled_prompt_embeds_text_only = torch.cat(pooled_prompt_embeds_text_only_arr  ,dim = 0)
+            pooled_prompt_embeds_text_only = torch.cat(pooled_prompt_embeds_text_only_arr, dim=0)
             print(pooled_prompt_embeds_text_only.shape)
 
-            negative_pooled_prompt_embeds = torch.cat(negative_pooled_prompt_embeds_arr ,dim = 0)
+            negative_pooled_prompt_embeds = torch.cat(negative_pooled_prompt_embeds_arr, dim=0)
             print(negative_pooled_prompt_embeds.shape)
             # 8. Prepare latent variables
             num_channels_latents = self.unet.config.in_channels
@@ -481,7 +489,6 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
             add_time_ids = torch.cat([add_time_ids, add_time_ids], dim=0)
             add_time_ids = add_time_ids.to(device).repeat(batch_size * num_images_per_prompt, 1)
 
-
             print(latents.shape)
             print(add_time_ids.shape)
 
@@ -492,20 +499,18 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                 if self.interrupt:
                     continue
 
-                latent_model_input = (
-                    torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                )
+                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                if i <= start_merge_step or nc_flag:  
+                if i <= start_merge_step or nc_flag:
                     current_prompt_embeds = torch.cat(
                         [negative_prompt_embeds, prompt_embeds_text_only], dim=0
                     )
-                    add_text_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds_text_only], dim=0)
-                else:
-                    current_prompt_embeds = torch.cat(
-                        [negative_prompt_embeds, prompt_embeds], dim=0
+                    add_text_embeds = torch.cat(
+                        [negative_pooled_prompt_embeds, pooled_prompt_embeds_text_only], dim=0
                     )
+                else:
+                    current_prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
                     add_text_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
                 # predict the noise residual
                 added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
@@ -514,9 +519,9 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                 # print(current_prompt_embeds.shape)
                 # print(add_text_embeds.shape)
                 # print(add_time_ids.shape)
-                #zeros_matrix =
-                #global_mask1024 = torch.cat([torch.randn(1, 1024, 1, 1, device=device) for random_number])
-                #global_mask4096 =
+                # zeros_matrix =
+                # global_mask1024 = torch.cat([torch.randn(1, 1024, 1, 1, device=device) for random_number])
+                # global_mask4096 =
                 noise_pred = self.unet(
                     latent_model_input,
                     t,
@@ -533,10 +538,14 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
 
                 if do_classifier_free_guidance and guidance_rescale > 0.0:
                     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                    noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+                    noise_pred = rescale_noise_cfg(
+                        noise_pred, noise_pred_text, guidance_rescale=guidance_rescale
+                    )
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[
+                    0
+                ]
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
@@ -547,7 +556,9 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
 
                     latents = callback_outputs.pop("latents", latents)
                     prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
-                    negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
+                    negative_prompt_embeds = callback_outputs.pop(
+                        "negative_prompt_embeds", negative_prompt_embeds
+                    )
                     add_text_embeds = callback_outputs.pop("add_text_embeds", add_text_embeds)
                     # negative_pooled_prompt_embeds = callback_outputs.pop(
                     #     "negative_pooled_prompt_embeds", negative_pooled_prompt_embeds
@@ -556,7 +567,9 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                     # negative_add_time_ids = callback_outputs.pop("negative_add_time_ids", negative_add_time_ids)
 
                 # call the callback, if provided
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                if i == len(timesteps) - 1 or (
+                    (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0
+                ):
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
                         step_idx = i // getattr(self.scheduler, "order", 1)
