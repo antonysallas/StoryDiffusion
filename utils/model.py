@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 from transformers.models.clip.modeling_clip import CLIPVisionModelWithProjection
 from transformers.models.clip.configuration_clip import CLIPVisionConfig
-from transformers import PretrainedConfig
 
 VISION_CONFIG_DICT = {
     "hidden_size": 1024,
@@ -101,7 +100,7 @@ class PhotoMakerIDEncoder(CLIPVisionModelWithProjection):
         id_embeds_2 = self.visual_projection_2(shared_id_embeds)
 
         id_embeds = id_embeds.view(b, num_inputs, 1, -1)
-        id_embeds_2 = id_embeds_2.view(b, num_inputs, 1, -1)    
+        id_embeds_2 = id_embeds_2.view(b, num_inputs, 1, -1)
 
         id_embeds = torch.cat((id_embeds, id_embeds_2), dim=-1)
         updated_prompt_embeds = self.fuse_module(prompt_embeds, id_embeds, class_tokens_mask)

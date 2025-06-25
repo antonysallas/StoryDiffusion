@@ -1,21 +1,15 @@
 from typing import Any, Callable, Dict, List, Optional, Union, Tuple
-from collections import OrderedDict
-import os
 import PIL
-import numpy as np
 
 import torch
-from torchvision import transforms as T
 
 from safetensors import safe_open
 from huggingface_hub.utils import validate_hf_hub_args
-from transformers import CLIPImageProcessor, CLIPTokenizer
+from transformers import CLIPImageProcessor
 from diffusers import StableDiffusionXLPipeline
 from diffusers.pipelines.stable_diffusion_xl import StableDiffusionXLPipelineOutput
 from diffusers.utils import (
     _get_model_file,
-    is_transformers_available,
-    logging,
 )
 
 from . import PhotoMakerIDEncoder
@@ -65,7 +59,7 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
         # Load the main state dict first.
         cache_dir = kwargs.pop("cache_dir", None)
         force_download = kwargs.pop("force_download", False)
-        resume_download = kwargs.pop("resume_download", False)
+        # resume_download = kwargs.pop("resume_download", False)
         proxies = kwargs.pop("proxies", None)
         local_files_only = kwargs.pop("local_files_only", None)
         token = kwargs.pop("token", None)
@@ -496,7 +490,7 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                 )
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                if i <= start_merge_step or nc_flag:  
+                if i <= start_merge_step or nc_flag:
                     current_prompt_embeds = torch.cat(
                         [negative_prompt_embeds, prompt_embeds_text_only], dim=0
                     )
