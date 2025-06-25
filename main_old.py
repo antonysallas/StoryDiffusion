@@ -1,3 +1,19 @@
+"""
+StoryDiffusion Low VRAM Gradio Application
+
+This module implements a low VRAM-optimized version of StoryDiffusion for consistent character generation
+across multiple images using Stable Diffusion XL. It features:
+
+- Custom attention processors for maintaining character consistency
+- Support for both text-only and reference image-based character generation
+- Efficient memory management for low VRAM environments
+- Comic-style typesetting and captioning capabilities
+- Integration with Hugging Face models and PhotoMaker
+
+The application uses Paired Attention mechanisms to ensure consistent character representation
+across multiple generated images while minimizing memory usage.
+"""
+
 from this import d
 import gradio as gr
 import numpy as np
@@ -32,13 +48,16 @@ from utils.utils import get_comic
 from utils.style_template import styles
 from utils.load_models_utils import get_models_dict, load_models
 
+# Style configuration - available style templates for image generation
 STYLE_NAMES = list(styles.keys())
 DEFAULT_STYLE_NAME = "Japanese Anime"
-global models_dict
 
+# Global dictionary to store available model configurations
+global models_dict
 models_dict = get_models_dict()
 
-# Automatically select the device
+# Device selection - automatically choose the best available compute device
+# Priority: CUDA (NVIDIA GPU) > MPS (Apple Silicon) > CPU
 device = (
     "cuda"
     if torch.cuda.is_available()
@@ -46,14 +65,12 @@ device = (
 )
 print(f"@@device:{device}")
 
-
-# check if the file exists locally at a specified path before downloading it.
-# if the file doesn't exist, it uses `hf_hub_download` to download the file
-# and optionally move it to a specific directory. If the file already
-# exists, it simply uses the local path.
+# PhotoMaker model setup - download and cache the PhotoMaker model for reference image-based generation
+# PhotoMaker enables using reference images to maintain character consistency
 local_dir = "data/"
 photomaker_local_path = f"{local_dir}photomaker-v1.bin"
 if not os.path.exists(photomaker_local_path):
+    # Download from Hugging Face if not present locally
     photomaker_path = hf_hub_download(
         repo_id="TencentARC/PhotoMaker",
         filename="photomaker-v1.bin",
@@ -63,10 +80,17 @@ if not os.path.exists(photomaker_local_path):
 else:
     photomaker_path = photomaker_local_path
 
+# Maximum seed value for random number generation
 MAX_SEED = np.iinfo(np.int32).max
 
 
 def setup_seed(seed):
+    """
+    Set up random seeds for reproducible generation across all random number generators.
+
+    Args:
+        seed (int): The seed value to use for all random number generators
+    """
     torch.manual_seed(seed)
     if device == "cuda":
         torch.cuda.manual_seed_all(seed)
@@ -76,6 +100,12 @@ def setup_seed(seed):
 
 
 def set_text_unfinished():
+    """
+    Update the UI to show generation is in progress.
+
+    Returns:
+        gr.update: Gradio update object with visible generation progress message
+    """
     return gr.update(
         visible=True,
         value="<h3>(Not Finished) Generating ···  The intermediate results will be shown.</h3>",
@@ -83,31 +113,50 @@ def set_text_unfinished():
 
 
 def set_text_finished():
+    """
+    Update the UI to show generation is complete.
+
+    Returns:
+        gr.update: Gradio update object with visible completion message
+    """
     return gr.update(visible=True, value="<h3>Generation Finished</h3>")
 
 
-#################################################
 def get_image_path_list(folder_name):
+    """
+    Get a sorted list of image file paths from a folder.
+
+    Args:
+        folder_name (str): Path to the folder containing images
+
+    Returns:
+        list: Sorted list of full paths to image files in the folder
+    """
     image_basename_list = os.listdir(folder_name)
     image_path_list = sorted(
         [os.path.join(folder_name, basename) for basename in image_basename_list]
     )
     return image_path_list
-
-
-#################################################
 class SpatialAttnProcessor2_0(torch.nn.Module):
-    r"""
-    Attention processor for IP-Adapater for PyTorch 2.0.
+    """
+    Custom spatial attention processor for maintaining character consistency across generated images.
+
+    This processor implements the Paired Attention mechanism that allows StoryDiffusion to generate
+    consistent characters across multiple images. It works by:
+
+    1. Storing character-specific attention features during initial generation (write mode)
+    2. Retrieving and applying these features during subsequent generations (read mode)
+    3. Using efficient memory indexing to handle different attention resolutions (32x32, 64x64)
+
+    The processor maintains an id_bank that stores attention features for each character at each
+    denoising step, enabling consistent character representation across the image sequence.
+
     Args:
-        hidden_size (`int`):
-            The hidden size of the attention layer.
-        cross_attention_dim (`int`):
-            The number of channels in the `encoder_hidden_states`.
-        text_context_len (`int`, defaults to 77):
-            The context length of the text features.
-        scale (`float`, defaults to 1.0):
-            the weight scale of image prompt.
+        hidden_size (int, optional): The hidden size of the attention layer
+        cross_attention_dim (int, optional): The number of channels in the encoder_hidden_states
+        id_length (int): Number of character reference images to process
+        device (torch.device): Compute device (cuda, mps, or cpu)
+        dtype (torch.dtype): Data type for tensors (default: float16 for efficiency)
     """
 
     def __init__(
@@ -119,6 +168,7 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
         dtype=torch.float16,
     ):
         super().__init__()
+        # Ensure PyTorch 2.0+ is available for scaled_dot_product_attention
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError(
                 "AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
@@ -127,9 +177,9 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
         self.dtype = dtype
         self.hidden_size = hidden_size
         self.cross_attention_dim = cross_attention_dim
-        self.total_length = id_length + 1
-        self.id_length = id_length
-        self.id_bank = {}
+        self.total_length = id_length + 1  # Total attention length including self-attention
+        self.id_length = id_length  # Number of character reference images
+        self.id_bank = {}  # Storage for character-specific attention features
 
     def __call__(
         self,
@@ -139,14 +189,27 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
         attention_mask=None,
         temb=None,
     ):
-        # un_cond_hidden_states, cond_hidden_states = hidden_states.chunk(2)
-        # un_cond_hidden_states = self.__call2__(attn, un_cond_hidden_states,encoder_hidden_states,attention_mask,temb)
-        # 生成一个0到1之间的随机数
+        """
+        Main attention processing method that handles both storing (write mode) and retrieving (read mode)
+        character-specific attention features.
+
+        Args:
+            attn: The attention module being processed
+            hidden_states: Input hidden states tensor
+            encoder_hidden_states: Optional encoder hidden states for cross-attention
+            attention_mask: Optional attention mask
+            temb: Optional time embedding
+
+        Returns:
+            torch.Tensor: Processed hidden states with character consistency applied
+        """
+        # Access global variables for attention control
         global total_count, attn_count, cur_step, indices1024, indices4096
         global sa32, sa64
         global write
         global height, width
         global character_dict, character_index_dict, invert_character_index_dict, cur_character, ref_indexs_dict, ref_totals, cur_character
+        # Initialize attention indices for different resolutions on first step
         if attn_count == 0 and cur_step == 0:
             indices1024, indices4096 = cal_attn_indice_xl_effcient_memory(
                 self.total_length,
@@ -158,19 +221,27 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
                 device=self.device,
                 dtype=self.dtype,
             )
+
+        # Write mode: Store character-specific attention features
         if write:
-            assert len(cur_character) == 1
+            assert len(cur_character) == 1  # Currently processing one character at a time
+
+            # Select appropriate indices based on attention resolution
             if hidden_states.shape[1] == (height // 32) * (width // 32):
-                indices = indices1024
+                indices = indices1024  # 32x32 resolution
             else:
-                indices = indices4096
-            # print(f"white:{cur_step}")
+                indices = indices4096  # 64x64 resolution
+
+            # Reshape hidden states to separate batch and image dimensions
             total_batch_size, nums_token, channel = hidden_states.shape
-            img_nums = total_batch_size // 2
+            img_nums = total_batch_size // 2  # Unconditional + conditional
             hidden_states = hidden_states.reshape(-1, img_nums, nums_token, channel)
-            # print(img_nums,len(indices),hidden_states.shape,self.total_length)
+
+            # Initialize character storage if needed
             if cur_character[0] not in self.id_bank:
                 self.id_bank[cur_character[0]] = {}
+
+            # Store attention features for current character and step
             self.id_bank[cur_character[0]][cur_step] = [
                 hidden_states[:, img_ind, indices[img_ind], :]
                 .reshape(2, -1, channel)
@@ -178,28 +249,29 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
                 for img_ind in range(img_nums)
             ]
             hidden_states = hidden_states.reshape(-1, nums_token, channel)
-            # self.id_bank[cur_step] = [hidden_states[:self.id_length].clone(), hidden_states[self.id_length:].clone()]
         else:
-            # encoder_hidden_states = torch.cat((self.id_bank[cur_step][0].to(self.device),self.id_bank[cur_step][1].to(self.device)))
-            # TODO: ADD Multipersion Control
+            # Read mode: Retrieve stored character features for consistency
             encoder_arr = []
             for character in cur_character:
                 encoder_arr = encoder_arr + [
                     tensor.to(self.device)
                     for tensor in self.id_bank[character][cur_step]
                 ]
-        # 判断随机数是否大于0.5
+        # Process attention based on denoising step
         if cur_step < 1:
+            # First step: standard attention without character features
             hidden_states = self.__call2__(
                 attn, hidden_states, None, attention_mask, temb
             )
-        else:  # 256 1024 4096
+        else:
+            # Later steps: apply character consistency with probability
             random_number = random.random()
+            # Higher probability of applying consistency in early steps
             if cur_step < 20:
-                rand_num = 0.3
+                rand_num = 0.3  # 70% chance of applying consistency
             else:
-                rand_num = 0.1
-            # print(f"hidden state shape {hidden_states.shape[1]}")
+                rand_num = 0.1  # 90% chance of applying consistency
+
             if random_number > rand_num:
                 if hidden_states.shape[1] == (height // 32) * (width // 32):
                     indices = indices1024
@@ -289,6 +361,25 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
         attention_mask=None,
         temb=None,
     ):
+        """
+        Core attention computation using PyTorch 2.0's scaled_dot_product_attention.
+
+        This method performs the actual attention computation, handling:
+        - Query, key, value projections
+        - Multi-head attention with scaled dot product
+        - Optional spatial normalization and group normalization
+        - Residual connections
+
+        Args:
+            attn: The attention module containing projection layers
+            hidden_states: Input hidden states
+            encoder_hidden_states: Optional encoder states for cross-attention
+            attention_mask: Optional attention mask
+            temb: Optional time embedding
+
+        Returns:
+            torch.Tensor: Attention output with residual connection
+        """
         residual = hidden_states
 
         if attn.spatial_norm is not None:
@@ -367,14 +458,31 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
 
 
 def set_attention_processor(unet, id_length, is_ipadapter=False):
+    """
+    Configure attention processors for the UNet model to enable character consistency.
+
+    This function sets up custom attention processors for specific layers in the UNet:
+    - SpatialAttnProcessor2_0 for up_blocks self-attention layers (character consistency)
+    - Standard AttnProcessor for other layers
+    - Optional IPAttnProcessor2_0 for IP-Adapter support
+
+    Args:
+        unet: The UNet model to configure
+        id_length (int): Number of character reference images
+        is_ipadapter (bool): Whether to use IP-Adapter processors for cross-attention
+    """
     global attn_procs
     attn_procs = {}
+
     for name in unet.attn_processors.keys():
+        # Determine if this is self-attention or cross-attention
         cross_attention_dim = (
             None
             if name.endswith("attn1.processor")
             else unet.config.cross_attention_dim
         )
+
+        # Calculate hidden size based on block location
         if name.startswith("mid_block"):
             hidden_size = unet.config.block_out_channels[-1]
         elif name.startswith("up_blocks"):
@@ -383,12 +491,17 @@ def set_attention_processor(unet, id_length, is_ipadapter=False):
         elif name.startswith("down_blocks"):
             block_id = int(name[len("down_blocks.")])
             hidden_size = unet.config.block_out_channels[block_id]
+
+        # Assign appropriate processor based on layer type
         if cross_attention_dim is None:
+            # Self-attention layers
             if name.startswith("up_blocks"):
+                # Use custom processor for character consistency in up_blocks
                 attn_procs[name] = SpatialAttnProcessor2_0(id_length=id_length)
             else:
                 attn_procs[name] = AttnProcessor()
         else:
+            # Cross-attention layers
             if is_ipadapter:
                 attn_procs[name] = IPAttnProcessor2_0(
                     hidden_size=hidden_size,
@@ -436,41 +549,60 @@ css = """
 
 def save_single_character_weights(unet, character, description, filepath):
     """
-    保存 attention_processor 类中的 id_bank GPU Tensor 列表到指定文件中。
-    参数:
-    - model: 包含 attention_processor 类实例的模型。
-    - filepath: 权重要保存到的文件路径。
+    Save character-specific attention weights from the UNet's attention processors.
+
+    This function extracts and saves the id_bank tensors that store character-specific
+    attention features, allowing them to be reused in future generations for consistent
+    character representation.
+
+    Args:
+        unet: The UNet model containing attention processors with character data
+        character (str): Character identifier to save
+        description (str): Character description for reference
+        filepath (str): Path where the weights file will be saved
     """
     weights_to_save = {}
     weights_to_save["description"] = description
     weights_to_save["character"] = character
+
+    # Extract attention features from each SpatialAttnProcessor2_0
     for attn_name, attn_processor in unet.attn_processors.items():
         if isinstance(attn_processor, SpatialAttnProcessor2_0):
-            # 将每个 Tensor 转到 CPU 并转为列表，以确保它可以被序列化
+            # Move tensors to CPU for serialization
             weights_to_save[attn_name] = {}
             for step_key in attn_processor.id_bank[character].keys():
                 weights_to_save[attn_name][step_key] = [
                     tensor.cpu()
                     for tensor in attn_processor.id_bank[character][step_key]
                 ]
-    # 使用torch.save保存权重
+
+    # Save weights using PyTorch's serialization
     torch.save(weights_to_save, filepath)
 
 
 def load_single_character_weights(unet, filepath):
     """
-    从指定文件中加载权重到 attention_processor 类的 id_bank 中。
-    参数:
-    - model: 包含 attention_processor 类实例的模型。
-    - filepath: 权重文件的路径。
+    Load saved character-specific attention weights into the UNet's attention processors.
+
+    This function restores previously saved character attention features, enabling
+    consistent character generation without needing to regenerate reference images.
+
+    Args:
+        unet: The UNet model to load weights into
+        filepath (str): Path to the saved weights file
+
+    Returns:
+        None (modifies UNet attention processors in-place)
     """
-    # 使用torch.load来读取权重
+    # Load weights from file
     weights_to_load = torch.load(filepath, map_location=torch.device("cpu"))
     character = weights_to_load["character"]
     description = weights_to_load["description"]
+
+    # Restore weights to each SpatialAttnProcessor2_0
     for attn_name, attn_processor in unet.attn_processors.items():
         if isinstance(attn_processor, SpatialAttnProcessor2_0):
-            # 转移权重到GPU（如果GPU可用的话）并赋值给id_bank
+            # Transfer weights to appropriate device and restore to id_bank
             attn_processor.id_bank[character] = {}
             for step_key in weights_to_load[attn_name].keys():
                 attn_processor.id_bank[character][step_key] = [
@@ -480,19 +612,33 @@ def load_single_character_weights(unet, filepath):
 
 
 def save_results(unet, img_list):
+    """
+    Save generated images to a timestamped folder.
 
+    Creates a results folder with the current timestamp and saves all generated
+    images. Also creates a weights subfolder for potential character weight saving
+    (currently commented out).
+
+    Args:
+        unet: The UNet model (for potential weight saving)
+        img_list (list): List of PIL images to save
+    """
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     folder_name = f"results/{timestamp}"
     weight_folder_name = f"{folder_name}/weights"
-    # 创建文件夹
+
+    # Create output directories
     if not os.path.exists(folder_name):
         os.makedirs(folder_name)
         os.makedirs(weight_folder_name)
 
+    # Save each generated image
     for idx, img in enumerate(img_list):
-        file_path = os.path.join(folder_name, f"image_{idx}.png")  # 图片文件名
+        file_path = os.path.join(folder_name, f"image_{idx}.png")
         img.save(file_path)
+
     global character_dict
+    # Optional: Save character weights for future use
     # for char in character_dict:
     #     description = character_dict[char]
     #     save_single_character_weights(unet,char,description,os.path.join(weight_folder_name, f'{char}.pt'))
@@ -544,55 +690,76 @@ version = r"""
 <h5 >3. [NC]symbol (The [NC] symbol is used as a flag to indicate that no characters should be present in the generated scene images. If you want do that, prepend the "[NC]" at the beginning of the line. For example, to generate a scene of falling leaves without any character, write: "[NC] The leaves are falling.")</h5>
 <h5 align="center">Tips: </h4>
 """
-#################################################
+# Global variables for attention control and model state
 global attn_count, total_count, id_length, total_length, cur_step, cur_model_type
 global write
 global sa32, sa64
 global height, width
-attn_count = 0
-total_count = 0
-cur_step = 0
-id_length = 4
-total_length = 5
-cur_model_type = ""
+
+# Attention tracking variables
+attn_count = 0  # Current attention layer being processed
+total_count = 0  # Total number of attention layers with custom processors
+cur_step = 0  # Current denoising step
+id_length = 4  # Default number of character reference images
+total_length = 5  # Total attention length (id_length + 1)
+cur_model_type = ""  # Current loaded model configuration
+
+# Attention processor storage
 global attn_procs, unet
 attn_procs = {}
-###
-write = False
-###
-sa32 = 0.5
-sa64 = 0.5
+
+# Generation mode flag
+write = False  # True when storing character features, False when applying them
+
+# Paired attention strengths
+sa32 = 0.5  # Attention strength at 32x32 resolution
+sa64 = 0.5  # Attention strength at 64x64 resolution
+
+# Default image dimensions
 height = 768
 width = 768
-###
+
+# Pipeline and model configuration
 global pipe
 global sd_model_path
 pipe = None
-sd_model_path = models_dict["Unstable"]["path"]  # "SG161222/RealVisXL_V4.0"
+sd_model_path = models_dict["Unstable"]["path"]  # Default model path
 single_files = models_dict["Unstable"]["single_files"]
-### LOAD Stable Diffusion Pipeline
+
+# Initialize Stable Diffusion Pipeline
 if single_files:
+    # Load from single checkpoint file
     pipe = StableDiffusionXLPipeline.from_single_file(
         sd_model_path, torch_dtype=torch.float16
     )
 else:
+    # Load from Hugging Face model repository
     pipe = StableDiffusionXLPipeline.from_pretrained(
         sd_model_path, torch_dtype=torch.float16, use_safetensors=False
     )
+
+# Configure pipeline for efficient generation
 pipe = pipe.to(device)
-pipe.enable_freeu(s1=0.6, s2=0.4, b1=1.1, b2=1.2)
-# pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-pipe.scheduler.set_timesteps(50)
-pipe.enable_vae_slicing()
+pipe.enable_freeu(s1=0.6, s2=0.4, b1=1.1, b2=1.2)  # FreeU for quality improvement
+pipe.scheduler.set_timesteps(50)  # Set denoising steps
+pipe.enable_vae_slicing()  # Enable VAE slicing for memory efficiency
+
+# Enable CPU offloading for low VRAM environments (except MPS)
 if device != "mps":
     pipe.enable_model_cpu_offload()
+
+# Extract UNet and set initial model type
 unet = pipe.unet
 cur_model_type = "Unstable" + "-" + "original"
-### Insert PairedAttention
+
+# Configure Paired Attention processors for character consistency
 for name in unet.attn_processors.keys():
+    # Determine if this is self-attention or cross-attention
     cross_attention_dim = (
         None if name.endswith("attn1.processor") else unet.config.cross_attention_dim
     )
+
+    # Calculate hidden size based on block position
     if name.startswith("mid_block"):
         hidden_size = unet.config.block_out_channels[-1]
     elif name.startswith("up_blocks"):
@@ -601,14 +768,19 @@ for name in unet.attn_processors.keys():
     elif name.startswith("down_blocks"):
         block_id = int(name[len("down_blocks.")])
         hidden_size = unet.config.block_out_channels[block_id]
+
+    # Apply custom processor only to up_blocks self-attention layers
     if cross_attention_dim is None and (name.startswith("up_blocks")):
         attn_procs[name] = SpatialAttnProcessor2_0(id_length=id_length)
         total_count += 1
     else:
         attn_procs[name] = AttnProcessor()
+
 print("successsfully load paired self-attention")
 print(f"number of the processor : {total_count}")
 unet.set_attn_processor(copy.deepcopy(attn_procs))
+
+# Pre-calculate attention masks for different resolutions
 global mask1024, mask4096
 mask1024, mask4096 = cal_attn_mask_xl(
     total_length,
@@ -621,10 +793,19 @@ mask1024, mask4096 = cal_attn_mask_xl(
     dtype=torch.float16,
 )
 
-######### Gradio Fuction #############
+######### Gradio UI Helper Functions #############
 
 
 def swap_to_gallery(images):
+    """
+    Switch UI view to show uploaded images in gallery format.
+
+    Args:
+        images: Uploaded image files
+
+    Returns:
+        tuple: Gradio update objects to show gallery and hide file upload
+    """
     return (
         gr.update(value=images, visible=True),
         gr.update(visible=True),
@@ -633,6 +814,18 @@ def swap_to_gallery(images):
 
 
 def upload_example_to_gallery(images, prompt, style, negative_prompt):
+    """
+    Load example images into the gallery view.
+
+    Args:
+        images: Example images to display
+        prompt: Associated prompt text
+        style: Style template name
+        negative_prompt: Negative prompt text
+
+    Returns:
+        tuple: Gradio update objects to show gallery
+    """
     return (
         gr.update(value=images, visible=True),
         gr.update(visible=True),
@@ -641,19 +834,52 @@ def upload_example_to_gallery(images, prompt, style, negative_prompt):
 
 
 def remove_back_to_files():
+    """
+    Return UI to file upload mode from gallery view.
+
+    Returns:
+        tuple: Gradio update objects to hide gallery and show file upload
+    """
     return gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
 
 
 def remove_tips():
+    """
+    Hide tips/information display.
+
+    Returns:
+        gr.update: Hidden tips element
+    """
     return gr.update(visible=False)
 
 
 def apply_style_positive(style_name: str, positive: str):
+    """
+    Apply style template to a single positive prompt.
+
+    Args:
+        style_name (str): Name of the style template
+        positive (str): Positive prompt to style
+
+    Returns:
+        str: Styled positive prompt
+    """
     p, n = styles.get(style_name, styles[DEFAULT_STYLE_NAME])
     return p.replace("{prompt}", positive)
 
 
 def apply_style(style_name: str, positives: list, negative: str = ""):
+    """
+    Apply style template to multiple prompts.
+
+    Args:
+        style_name (str): Name of the style template
+        positives (list): List of positive prompts to style
+        negative (str): Additional negative prompt text
+
+    Returns:
+        tuple: (styled_positives, styled_negative)
+    """
     p, n = styles.get(style_name, styles[DEFAULT_STYLE_NAME])
     return [
         p.replace("{prompt}", positive) for positive in positives
@@ -661,27 +887,50 @@ def apply_style(style_name: str, positives: list, negative: str = ""):
 
 
 def change_visiale_by_model_type(_model_type):
+    """
+    Update UI visibility based on selected model type.
+
+    Args:
+        _model_type (str): Either "Only Using Textual Description" or "Using Ref Images"
+
+    Returns:
+        tuple: Gradio update objects for conditional UI elements
+    """
     if _model_type == "Only Using Textual Description":
         return (
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
+            gr.update(visible=False),  # Hide image upload
+            gr.update(visible=False),  # Hide style strength
+            gr.update(visible=False),  # Hide IP adapter strength
         )
     elif _model_type == "Using Ref Images":
         return (
-            gr.update(visible=True),
-            gr.update(visible=True),
-            gr.update(visible=False),
+            gr.update(visible=True),   # Show image upload
+            gr.update(visible=True),   # Show style strength
+            gr.update(visible=False),  # Keep IP adapter hidden
         )
     else:
         raise ValueError("Invalid model type", _model_type)
 
 
 def load_character_files(character_files: str):
+    """
+    Load character descriptions from saved weight files.
+
+    Args:
+        character_files (str): Newline-separated paths to character weight files
+
+    Returns:
+        str: Combined character descriptions from loaded files
+
+    Raises:
+        gr.Error: If no character files provided
+    """
     if character_files == "":
         raise gr.Error("Please set a character file!")
     character_files_arr = character_files.splitlines()
     primarytext = []
+
+    # Load each character file and extract descriptions
     for character_file_name in character_files_arr:
         character_file = torch.load(
             character_file_name, map_location=torch.device("cpu")
@@ -691,9 +940,21 @@ def load_character_files(character_files: str):
 
 
 def load_character_files_on_running(unet, character_files: str):
+    """
+    Load saved character weights into the UNet during generation.
+
+    Args:
+        unet: The UNet model to load weights into
+        character_files (str): Newline-separated paths to character weight files
+
+    Returns:
+        bool: True if weights were loaded, False if no files provided
+    """
     if character_files == "":
         return False
     character_files_arr = character_files.splitlines()
+
+    # Load each character's weights into the UNet
     for character_file in character_files_arr:
         load_single_character_weights(unet, character_file)
     return True
@@ -721,18 +982,59 @@ def process_generation(
     _comic_type,
     font_choice,
     _char_files,
-):  # Corrected font_choice usage
+):
+    """
+    Main image generation function that orchestrates the entire StoryDiffusion pipeline.
+
+    This function handles:
+    1. Model loading and configuration based on selected options
+    2. Character reference image generation (if using PhotoMaker)
+    3. Sequential story image generation with character consistency
+    4. Optional comic-style typesetting and captioning
+
+    Args:
+        _sd_type (str): Stable Diffusion model type to use
+        _model_type (str): "Using Ref Images" for PhotoMaker or "Only Using Textual Description"
+        _upload_images: List of uploaded reference images for characters
+        _num_steps (int): Number of denoising steps
+        style_name (str): Style template to apply
+        _Ip_Adapter_Strength (float): IP-Adapter strength (unused in current version)
+        _style_strength_ratio (float): Style strength percentage for PhotoMaker
+        guidance_scale (float): Classifier-free guidance scale
+        seed_ (int): Random seed for generation
+        sa32_ (float): Paired attention strength at 32x32 resolution
+        sa64_ (float): Paired attention strength at 64x64 resolution
+        id_length_ (int): Number of character reference images
+        general_prompt (str): Character descriptions (one per line)
+        negative_prompt (str): Negative prompt for all generations
+        prompt_array (str): Story prompts (one per line, one per image)
+        G_height (int): Generated image height
+        G_width (int): Generated image width
+        _comic_type (str): Comic typesetting style
+        font_choice (str): Font file for captions
+        _char_files (str): Optional character weight files to load
+
+    Yields:
+        list: List of generated PIL images (updates progressively)
+    """
+    # Validate character limit due to VRAM constraints
     if len(general_prompt.splitlines()) >= 3:
         raise gr.Error(
             "Support for more than three characters is temporarily unavailable due to VRAM limitations, but this issue will be resolved soon."
         )
+
+    # Convert model type selection to internal format
     _model_type = "Photomaker" if _model_type == "Using Ref Images" else "original"
+
+    # Validate PhotoMaker requirements
     if _model_type == "Photomaker" and "img" not in general_prompt:
         raise gr.Error(
             'Please add the triger word " img "  behind the class word you want to customize, such as: man img or woman img'
         )
     if _upload_images is None and _model_type != "original":
         raise gr.Error(f"Cannot find any input face image!")
+
+    # Update global configuration variables
     global sa32, sa64, id_length, total_length, attn_procs, unet, cur_model_type
     global write
     global cur_step, attn_count
@@ -961,6 +1263,15 @@ def process_generation(
 
 
 def array2string(arr):
+    """
+    Convert a list of strings to a single newline-separated string.
+
+    Args:
+        arr (list): List of strings to join
+
+    Returns:
+        str: Newline-separated string
+    """
     stringtmp = ""
     for i, part in enumerate(arr):
         if i != len(arr) - 1:
@@ -973,9 +1284,10 @@ def array2string(arr):
 
 #################################################
 #################################################
-### define the interface
+# Define the Gradio interface
 
 with gr.Blocks(css=css) as demo:
+    # State variables for storing UI data
     binary_matrixes = gr.State([])
     color_layout = gr.State([])
 
@@ -1049,6 +1361,7 @@ with gr.Blocks(css=css) as demo:
                 )
                 char_btn = gr.Button("Load Character files", visible=False)
                 with gr.Accordion("(4) Tune the hyperparameters", open=True):
+                    # Font selection for comic captions
                     font_choice = gr.Dropdown(
                         label="Select Font",
                         choices=[
@@ -1058,6 +1371,7 @@ with gr.Blocks(css=css) as demo:
                         info="Select font for the final slide.",
                         interactive=True,
                     )
+                    # Paired Attention strength controls
                     sa32_ = gr.Slider(
                         label=" (The degree of Paired Attention at 32 x 32 self-attention layers) ",
                         minimum=0,

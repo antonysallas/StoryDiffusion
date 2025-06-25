@@ -1,0 +1,21 @@
+[project]
+name = "storydiffusion"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "gradio",
+    "torch",
+    "torchvision",
+    "diffusers",
+    "transformers",
+    "huggingface-hub",
+    "spaces",
+    "numpy",
+    "accelerate",
+    "safetensors",
+    "omegaconf",
+    "peft",
+    "httpx",
+]

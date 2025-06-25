@@ -87,6 +87,7 @@ venv.bak/
 .aider*
 
 # ignore ALL .log files
+logs/
 *.log
 # ignore ALL files in ANY directory named temp
 .ipynb_checkpoints/

@@ -1,0 +1,33 @@
+services:
+  storydiffusion:
+    build: .
+    container_name: storydiffusion
+    ports:
+      - "7860:7860"
+    volumes:
+      # Mount models directory to persist downloaded models
+      - storydiffusion_data:/app/data
+      - storydiffusion_results:/app/results
+      # Optional: Mount HuggingFace cache to avoid re-downloading models
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    environment:
+      - PYTHONUNBUFFERED=1
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - GRADIO_ANALYTICS_ENABLED=False
+    # For GPU support (NVIDIA only)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  storydiffusion_data:
+    name: storydiffusion_data
+  storydiffusion_results:
+    name: storydiffusion_results
