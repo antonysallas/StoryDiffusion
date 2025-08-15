@@ -87,7 +87,6 @@ venv.bak/
 .aider*
 
 # ignore ALL .log files
-logs/
 *.log
 # ignore ALL files in ANY directory named temp
 .ipynb_checkpoints/
@@ -97,5 +96,3 @@ results/
 fonts/agency.ttf
 fonts/calibri.ttf
 data/
-.idea
-*.bak
