@@ -1,9 +1,8 @@
-from email.mime import image
 import torch
 import base64
 import gradio as gr
 import numpy as np
-from PIL import Image,ImageOps,ImageDraw, ImageFont
+from PIL import Image,ImageOps,ImageDraw
 from io import BytesIO
 import random
 MAX_COLORS = 12
@@ -13,7 +12,7 @@ def get_random_bool():
 def add_white_border(input_image, border_width=10):
     """
     为PIL图像添加指定宽度的白色边框。
-    
+
     :param input_image: PIL图像对象
     :param border_width: 边框宽度（单位：像素）
     :return: 带有白色边框的PIL图像对象
@@ -49,7 +48,7 @@ def process_mulline_text(draw, text, font, max_width):
             current_line = word
     # Add the last line
     lines.append(current_line)
-    return lines 
+    return lines
 
 
 
@@ -80,14 +79,14 @@ def add_caption(image, text, position = "bottom-mid",  font = None, text_color= 
     image_with_transparency = Image.new('RGBA', image.size)
     draw_with_transparency = ImageDraw.Draw(image_with_transparency)
     draw_with_transparency.rectangle(rectangle_position, fill=bg_color + (bg_opacity,))
-    
+
     image.paste(Image.alpha_composite(image.convert('RGBA'), image_with_transparency))
     print(ind,text_position)
     draw = ImageDraw.Draw(image)
     for ind, line in enumerate(lines[::-1]):
         text_position = text_positions[ind]
         draw.text(text_position, line, fill=text_color, font=font)
-    
+
     return image.convert('RGB')
 
 def get_comic(images,types = "4panel",captions = [],font = None,pad_image = None):
@@ -123,7 +122,7 @@ def get_comic_classical(images,captions = None,font = None,pad_image = None):
     # print(images_groups)
     row_images = []
     for ind, img_group in enumerate(images_groups):
-        row_images.append(get_row_image2(img_group ,captions= captions_groups[ind] if captions != None else None,font = font))    
+        row_images.append(get_row_image2(img_group ,captions= captions_groups[ind] if captions != None else None,font = font))
 
     return [combine_images_vertically_with_resize(row_images)]
 
@@ -138,13 +137,13 @@ def get_comic_4panel(images,captions = [],font = None,pad_image = None):
     for i,caption in enumerate(captions):
         images[i] = add_caption(images[i],caption,font = font)
     images_nums = len(images)
-    pad_nums = int((4 - images_nums % 4) % 4) 
+    pad_nums = int((4 - images_nums % 4) % 4)
     images = images + [pad_image for _ in range(pad_nums)]
     comics = []
     assert len(images)%4 == 0
     for i in range(len(images)//4):
         comics.append(combine_images_vertically_with_resize([combine_images_horizontally(images[i*4:i*4+2]), combine_images_horizontally(images[i*4+2:i*4+4])]))
-    
+
     return comics
 
 def get_row_image(images):
@@ -205,10 +204,10 @@ def concat_images_vertically_and_scale(images,scale_factor=2):
     widths = [img.width for img in images]
     if not all(width == widths[0] for width in widths):
         raise ValueError('All images must have the same width.')
-    
+
     # 计算总高度
     total_height = sum(img.height for img in images)
-    
+
     # 创建新的图像，宽度与原图相同，高度为所有图像高度之和
     max_width = max(widths)
     concatenated_image = Image.new('RGB', (max_width, total_height))
@@ -223,7 +222,7 @@ def concat_images_vertically_and_scale(images,scale_factor=2):
     new_height = concatenated_image.height // scale_factor
     new_width = concatenated_image.width // scale_factor
     resized_image = concatenated_image.resize((new_width, new_height), Image.LANCZOS)
-    
+
     return resized_image
 
 
@@ -249,13 +248,13 @@ def combine_images_horizontally(images):
     return new_im
 
 def combine_images_vertically_with_resize(images):
-    
+
     # 获取所有图片的宽度和高度
     widths, heights = zip(*(i.size for i in images))
-    
+
     # 确定新图片的宽度，即所有图片中最小的宽度
     min_width = min(widths)
-    
+
     # 调整图片尺寸以保持宽度一致，长宽比不变
     resized_images = []
     for img in images:
@@ -264,13 +263,13 @@ def combine_images_vertically_with_resize(images):
         # 调整图片大小
         resized_img = img.resize((min_width, new_height), Image.LANCZOS)
         resized_images.append(resized_img)
-    
+
     # 计算所有调整尺寸后图片的总高度
     total_height = sum(img.height for img in resized_images)
-    
+
     # 创建一个足够宽和高的新图片对象
     new_im = Image.new('RGB', (min_width, total_height))
-    
+
     # 竖直拼接图片
     y_offset = 0
     for im in resized_images:
@@ -289,9 +288,9 @@ def distribute_images2(images, pad_image):
 
     size_index = 0
     while remaining > 0:
-        size = group_sizes[size_index%len(group_sizes)] 
+        size = group_sizes[size_index%len(group_sizes)]
         if remaining < size and remaining < min(group_sizes):
-            size = min(group_sizes) 
+            size = min(group_sizes)
         if remaining > size:
             new_group = images[-remaining: -remaining + size]
         else:
@@ -303,12 +302,12 @@ def distribute_images2(images, pad_image):
     groups[-1] = groups[-1] + [pad_image for _ in range(-remaining)]
 
     return groups
-    
+
 
 def distribute_images(images, group_sizes=(4, 3, 2)):
     groups = []
     remaining = len(images)
-    
+
     while remaining > 0:
         # 优先分配最大组（4张图片），再考虑3张，最后处理2张
         for size in sorted(group_sizes, reverse=True):
@@ -326,7 +325,7 @@ def distribute_images(images, group_sizes=(4, 3, 2)):
             elif remaining < min(group_sizes) and groups:
                 groups[-1].extend(images[-remaining:])
                 remaining = 0
-    
+
     return groups
 
 def create_binary_matrix(img_arr, target_color):
@@ -423,4 +422,4 @@ def process_example(layout_path, all_prompts, seed_):
         prompts[n] = all_prompts[n+1]
 
     return [gr.update(visible=True), binary_matrixes, *visibilities, *colors, *prompts,
-            gr.update(visible=True), gr.update(value=all_prompts[0]), int(seed_)]    
+            gr.update(visible=True), gr.update(value=all_prompts[0]), int(seed_)]

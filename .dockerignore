@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+results/
+*.pt
+*.safetensors
+*.bin
+!data/photomaker-v1.bin
+.git/
+.gitignore
+*.log
+
+# Documentation
+*.md
+!README.md
+REFACTORING.md
+
+# Old files
+main_old.py
+*copy.txt

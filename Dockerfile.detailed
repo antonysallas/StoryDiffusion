@@ -1,0 +1,72 @@
+# Use Python 3.12 slim image as base (same as your local Python version)
+FROM python:3.12-slim
+
+# Create app user
+RUN useradd -m -u 1000 appuser
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies required for the packages
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    # OpenCV dependencies
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Step 1: Install uv for the app user
+USER appuser
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Set PATH to include uv
+ENV PATH="/home/appuser/.cargo/bin:${PATH}"
+
+# Copy project files and set ownership
+USER root
+COPY --chown=appuser:appuser pyproject.toml .
+COPY --chown=appuser:appuser requirements.txt .
+
+# Copy the rest of the application
+COPY --chown=appuser:appuser main.py .
+COPY --chown=appuser:appuser storydiffusion ./storydiffusion
+COPY --chown=appuser:appuser utils ./utils
+COPY --chown=appuser:appuser fonts ./fonts
+COPY --chown=appuser:appuser examples ./examples
+COPY --chown=appuser:appuser data ./data
+
+# Create necessary directories
+RUN mkdir -p results && chown -R appuser:appuser results
+
+# Switch to app user
+USER appuser
+
+# Step 2: Create virtual environment with uv
+RUN uv venv
+
+# Step 3: Activate venv and install pip (following your exact steps)
+RUN . .venv/bin/activate && \
+    python -m ensurepip && \
+    python -m pip install --upgrade pip
+
+# Step 4: Sync dependencies with uv
+RUN uv sync
+
+# Expose the port
+EXPOSE 7860
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV GRADIO_SERVER_NAME=0.0.0.0
+ENV GRADIO_SERVER_PORT=7860
+ENV GRADIO_TEMP_DIR=/tmp/gradio_cache
+
+# Step 5: Run the application with uv (exactly as your local command)
+CMD ["uv", "run", "main.py"]

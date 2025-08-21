@@ -1,21 +1,15 @@
 from typing import Any, Callable, Dict, List, Optional, Union, Tuple
-from collections import OrderedDict
-import os
 import PIL
-import numpy as np
 
 import torch
-from torchvision import transforms as T
 
 from safetensors import safe_open
 from huggingface_hub.utils import validate_hf_hub_args
-from transformers import CLIPImageProcessor, CLIPTokenizer
+from transformers import CLIPImageProcessor
 from diffusers import StableDiffusionXLPipeline
 from diffusers.pipelines.stable_diffusion_xl import StableDiffusionXLPipelineOutput
 from diffusers.utils import (
     _get_model_file,
-    is_transformers_available,
-    logging,
 )
 
 from . import PhotoMakerIDEncoder
@@ -109,18 +103,18 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
         # load finetuned CLIP image encoder and fuse module here if it has not been registered to the pipeline yet
         print(f"Loading PhotoMaker components [1] id_encoder from [{pretrained_model_name_or_path_or_dict}]...")
         id_encoder = PhotoMakerIDEncoder()
-        
+
         # Filter out unexpected keys (qformer_perceiver) from PhotoMaker V2
         filtered_state_dict = {
-            k: v for k, v in state_dict["id_encoder"].items() 
+            k: v for k, v in state_dict["id_encoder"].items()
             if not k.startswith("qformer_perceiver")
         }
-        
+
         # Check if any keys were filtered
         filtered_keys = [k for k in state_dict["id_encoder"].keys() if k.startswith("qformer_perceiver")]
         if filtered_keys:
             print(f"Filtered out {len(filtered_keys)} qformer_perceiver keys from PhotoMaker V2 model")
-        
+
         id_encoder.load_state_dict(filtered_state_dict, strict=True)
         id_encoder = id_encoder.to(self.device, dtype=self.unet.dtype)
         self.id_encoder = id_encoder
@@ -507,7 +501,7 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                 )
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                if i <= start_merge_step or nc_flag:  
+                if i <= start_merge_step or nc_flag:
                     current_prompt_embeds = torch.cat(
                         [negative_prompt_embeds, prompt_embeds_text_only], dim=0
                     )
