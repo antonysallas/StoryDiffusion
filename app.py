@@ -44,7 +44,7 @@ models_dict = {
 #    "SDXL":"stabilityai/stable-diffusion-xl-base-1.0" ,
    "Unstable": "stablediffusionapi/sdxl-unstable-diffusers-y"
 }
-photomaker_path =  hf_hub_download(repo_id="TencentARC/PhotoMaker", filename="photomaker-v1.bin", repo_type="model")
+photomaker_path =  hf_hub_download(repo_id="TencentARC/PhotoMaker-V2", filename="photomaker-v2.bin", repo_type="model")
 MAX_SEED = np.iinfo(np.int32).max
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -747,4 +747,4 @@ with gr.Blocks(css=css) as demo:
 
     # demo.load(None, None, None, _js=load_js)
 
-demo.launch(server_name="0.0.0.0", share = True if use_va else False)
+demo.launch(server_name="0.0.0.0", share=False)

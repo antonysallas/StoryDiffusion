@@ -65,7 +65,6 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
         # Load the main state dict first.
         cache_dir = kwargs.pop("cache_dir", None)
         force_download = kwargs.pop("force_download", False)
-        resume_download = kwargs.pop("resume_download", False)
         proxies = kwargs.pop("proxies", None)
         local_files_only = kwargs.pop("local_files_only", None)
         token = kwargs.pop("token", None)
@@ -82,7 +81,6 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
                 weights_name=weight_name,
                 cache_dir=cache_dir,
                 force_download=force_download,
-                resume_download=resume_download,
                 proxies=proxies,
                 local_files_only=local_files_only,
                 token=token,
@@ -111,7 +109,19 @@ class PhotoMakerStableDiffusionXLPipeline(StableDiffusionXLPipeline):
         # load finetuned CLIP image encoder and fuse module here if it has not been registered to the pipeline yet
         print(f"Loading PhotoMaker components [1] id_encoder from [{pretrained_model_name_or_path_or_dict}]...")
         id_encoder = PhotoMakerIDEncoder()
-        id_encoder.load_state_dict(state_dict["id_encoder"], strict=True)
+        
+        # Filter out unexpected keys (qformer_perceiver) from PhotoMaker V2
+        filtered_state_dict = {
+            k: v for k, v in state_dict["id_encoder"].items() 
+            if not k.startswith("qformer_perceiver")
+        }
+        
+        # Check if any keys were filtered
+        filtered_keys = [k for k in state_dict["id_encoder"].keys() if k.startswith("qformer_perceiver")]
+        if filtered_keys:
+            print(f"Filtered out {len(filtered_keys)} qformer_perceiver keys from PhotoMaker V2 model")
+        
+        id_encoder.load_state_dict(filtered_state_dict, strict=True)
         id_encoder = id_encoder.to(self.device, dtype=self.unet.dtype)
         self.id_encoder = id_encoder
         self.id_image_processor = CLIPImageProcessor()

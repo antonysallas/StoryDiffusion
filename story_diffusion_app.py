@@ -1,4 +1,3 @@
-from this import d
 import gradio as gr
 import numpy as np
 import torch
@@ -31,6 +30,7 @@ from diffusers.utils.loading_utils import load_image
 from utils.utils import get_comic
 from utils.style_template import styles
 from utils.load_models_utils import get_models_dict, load_models
+from utils.adapter_utils import create_character_adapter, CharacterConsistencyAdapter
 
 STYLE_NAMES = list(styles.keys())
 DEFAULT_STYLE_NAME = "Japanese Anime"
@@ -46,22 +46,38 @@ device = (
 )
 print(f"@@device:{device}")
 
+# RTX 5090 GPU optimizations
+if device == "cuda":
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.enabled = True
+    
+    # Get GPU info
+    gpu_name = torch.cuda.get_device_name(0)
+    gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    print(f"@@GPU: {gpu_name} with {gpu_memory:.1f}GB memory")
+
 
 # check if the file exists locally at a specified path before downloading it.
 # if the file doesn't exist, it uses `hf_hub_download` to download the file
 # and optionally move it to a specific directory. If the file already
-# exists, it simply uses the local path.
-local_dir = "data/"
-photomaker_local_path = f"{local_dir}photomaker-v1.bin"
-if not os.path.exists(photomaker_local_path):
-    photomaker_path = hf_hub_download(
-        repo_id="TencentARC/PhotoMaker",
-        filename="photomaker-v1.bin",
-        repo_type="model",
-        local_dir=local_dir,
-    )
+# Download InstantID models if not present (optional for character consistency)
+ENABLE_INSTANTID = True  # Set to False if you don't need character consistency
+ENABLE_CONTROLNET = True  # Set to False to disable ControlNet (pose control)
+
+if ENABLE_INSTANTID:
+    from utils.load_models_utils import download_instantid_models
+    try:
+        download_instantid_models()
+        print("✅ InstantID models ready")
+    except Exception as e:
+        print(f"⚠️ InstantID models download failed: {e}")
 else:
-    photomaker_path = photomaker_local_path
+    print("ℹ️ InstantID disabled - character consistency features unavailable")
+
+# PhotoMaker will be downloaded to HuggingFace cache when needed
+photomaker_path = None  # Will be resolved from HuggingFace cache when needed
 
 MAX_SEED = np.iinfo(np.int32).max
 
@@ -116,7 +132,7 @@ class SpatialAttnProcessor2_0(torch.nn.Module):
         cross_attention_dim=None,
         id_length=4,
         device=device,
-        dtype=torch.float16,
+        dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16,
     ):
         super().__init__()
         if not hasattr(F, "scaled_dot_product_attention"):
@@ -568,47 +584,70 @@ width = 768
 global pipe
 global sd_model_path
 pipe = None
-sd_model_path = models_dict["Unstable"]["path"]  # "SG161222/RealVisXL_V4.0"
-single_files = models_dict["Unstable"]["single_files"]
+
+# Use the first available model as default
+default_model_name = list(models_dict.keys())[0]
+default_model = models_dict[default_model_name]
+sd_model_path = default_model["path"]
+single_files = default_model["single_files"]
+print(f"Using default model: {default_model_name} -> {sd_model_path}")
 ### LOAD Stable Diffusion Pipeline
-if single_files:
-    pipe = StableDiffusionXLPipeline.from_single_file(
-        sd_model_path, torch_dtype=torch.float16
-    )
-else:
-    pipe = StableDiffusionXLPipeline.from_pretrained(
-        sd_model_path, torch_dtype=torch.float16, use_safetensors=False
-    )
-pipe = pipe.to(device)
-pipe.enable_freeu(s1=0.6, s2=0.4, b1=1.1, b2=1.2)
-# pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-pipe.scheduler.set_timesteps(50)
-pipe.enable_vae_slicing()
-if device != "mps":
-    pipe.enable_model_cpu_offload()
-unet = pipe.unet
-cur_model_type = "Unstable" + "-" + "original"
-### Insert PairedAttention
-for name in unet.attn_processors.keys():
-    cross_attention_dim = (
-        None if name.endswith("attn1.processor") else unet.config.cross_attention_dim
-    )
-    if name.startswith("mid_block"):
-        hidden_size = unet.config.block_out_channels[-1]
-    elif name.startswith("up_blocks"):
-        block_id = int(name[len("up_blocks.")])
-        hidden_size = list(reversed(unet.config.block_out_channels))[block_id]
-    elif name.startswith("down_blocks"):
-        block_id = int(name[len("down_blocks.")])
-        hidden_size = unet.config.block_out_channels[block_id]
-    if cross_attention_dim is None and (name.startswith("up_blocks")):
-        attn_procs[name] = SpatialAttnProcessor2_0(id_length=id_length)
-        total_count += 1
+# This will be loaded dynamically by the process_generation function
+# when actually needed, so we don't pre-load here for SD 3.5
+if default_model.get("architecture") == "sdxl":
+    if single_files:
+        pipe = StableDiffusionXLPipeline.from_single_file(
+            sd_model_path, torch_dtype=torch.float16
+        )
     else:
-        attn_procs[name] = AttnProcessor()
-print("successsfully load paired self-attention")
-print(f"number of the processor : {total_count}")
-unet.set_attn_processor(copy.deepcopy(attn_procs))
+        pipe = StableDiffusionXLPipeline.from_pretrained(
+            sd_model_path, torch_dtype=torch.float16, use_safetensors=False
+        )
+    pipe = pipe.to(device)
+    pipe.enable_freeu(s1=0.6, s2=0.4, b1=1.1, b2=1.2)
+    # pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+    pipe.scheduler.set_timesteps(50)
+    pipe.enable_vae_slicing()
+else:
+    # For SD 3.5, pipeline will be loaded dynamically
+    pipe = None
+    print(f"SD 3.5 model detected - pipeline will be loaded on demand")
+
+if device != "mps" and pipe is not None:
+    pipe.enable_model_cpu_offload()
+
+# Only set unet for SDXL models
+if pipe is not None:
+    unet = pipe.unet
+else:
+    unet = None
+
+cur_model_type = default_model_name + "-" + "original"
+### Insert PairedAttention
+# Only configure attention processors for SDXL models
+if unet is not None:
+    for name in unet.attn_processors.keys():
+        cross_attention_dim = (
+            None if name.endswith("attn1.processor") else unet.config.cross_attention_dim
+        )
+        if name.startswith("mid_block"):
+            hidden_size = unet.config.block_out_channels[-1]
+        elif name.startswith("up_blocks"):
+            block_id = int(name[len("up_blocks.")])
+            hidden_size = list(reversed(unet.config.block_out_channels))[block_id]
+        elif name.startswith("down_blocks"):
+            block_id = int(name[len("down_blocks.")])
+            hidden_size = unet.config.block_out_channels[block_id]
+        if cross_attention_dim is None and (name.startswith("up_blocks")):
+            attn_procs[name] = SpatialAttnProcessor2_0(id_length=id_length)
+            total_count += 1
+        else:
+            attn_procs[name] = AttnProcessor()
+    print("successsfully load paired self-attention")
+    print(f"number of the processor : {total_count}")
+    unet.set_attn_processor(copy.deepcopy(attn_procs))
+else:
+    print("SD 3.5 model - attention processors will be set during generation")
 global mask1024, mask4096
 mask1024, mask4096 = cal_attn_mask_xl(
     total_length,
@@ -722,57 +761,99 @@ def process_generation(
     font_choice,
     _char_files,
 ):  # Corrected font_choice usage
+    # Declare all global variables at the top of the function
+    global sa32, sa64, id_length, total_length, attn_procs, unet, cur_model_type
+    global write, cur_step, attn_count, height, width, pipe, sd_model_path, models_dict
+    
     if len(general_prompt.splitlines()) >= 3:
         raise gr.Error(
             "Support for more than three characters is temporarily unavailable due to VRAM limitations, but this issue will be resolved soon."
         )
-    _model_type = "Photomaker" if _model_type == "Using Ref Images" else "original"
-    if _model_type == "Photomaker" and "img" not in general_prompt:
-        raise gr.Error(
-            'Please add the triger word " img "  behind the class word you want to customize, such as: man img or woman img'
-        )
+    # Get model architecture to determine adapter type
+    model_architecture = models_dict[_sd_type].get("architecture", "sdxl")
+    
+    # Determine adapter type based on architecture
+    if _model_type == "Using Ref Images":
+        if model_architecture == "sdxl":
+            _model_type = "Photomaker"  # Use PhotoMaker for SDXL
+            if "img" not in general_prompt:
+                raise gr.Error(
+                    'Please add the trigger word " img " behind the class word you want to customize, such as: man img or woman img'
+                )
+        elif model_architecture == "sd3":
+            _model_type = "IPAdapter"  # Use IP-Adapter for SD 3.5
+            # SD 3.5 doesn't require trigger words
+        else:
+            raise gr.Error(f"Unsupported architecture: {model_architecture}")
+    else:
+        _model_type = "original"
     if _upload_images is None and _model_type != "original":
         raise gr.Error(f"Cannot find any input face image!")
-    global sa32, sa64, id_length, total_length, attn_procs, unet, cur_model_type
-    global write
-    global cur_step, attn_count
-    global height, width
+    
     height = G_height
     width = G_width
-    global pipe
-    global sd_model_path, models_dict
     sd_model_path = models_dict[_sd_type]
     use_safe_tensor = True
-    for attn_processor in pipe.unet.attn_processors.values():
-        if isinstance(attn_processor, SpatialAttnProcessor2_0):
-            for values in attn_processor.id_bank.values():
-                del values
-            attn_processor.id_bank = {}
-            attn_processor.id_length = id_length
-            attn_processor.total_length = id_length + 1
+    
+    # Clean up memory first
     gc.collect()
     torch.cuda.empty_cache()
-    if cur_model_type != _sd_type + "-" + _model_type:
+    if cur_model_type != _sd_type + "-" + _model_type or pipe is None:
         # apply the style template
         ##### load pipe
-        del pipe
+        if pipe is not None:
+            del pipe
         gc.collect()
         if device == "cuda":
             torch.cuda.empty_cache()
         model_info = models_dict[_sd_type]
         model_info["model_type"] = _model_type
-        pipe = load_models(model_info, device=device, photomaker_path=photomaker_path)
-        set_attention_processor(pipe.unet, id_length_, is_ipadapter=False)
+        # Only pass photomaker_path for SDXL models
+        if model_info.get("architecture") == "sdxl":
+            pipe = load_models(
+                model_info, 
+                device=device, 
+                photomaker_path=photomaker_path,
+                enable_controlnet=ENABLE_CONTROLNET
+            )
+        else:
+            pipe = load_models(
+                model_info, 
+                device=device, 
+                photomaker_path=None,
+                enable_controlnet=ENABLE_CONTROLNET  # SD 3.5 now supports ControlPose
+            )
+        
+        # Only set attention processors for SDXL models
+        if model_architecture == "sdxl":
+            # Clean up existing attention processors if they exist
+            if hasattr(pipe, 'unet') and hasattr(pipe.unet, 'attn_processors'):
+                for attn_processor in pipe.unet.attn_processors.values():
+                    if hasattr(attn_processor, 'id_bank'):
+                        for values in attn_processor.id_bank.values():
+                            del values
+                        attn_processor.id_bank = {}
+                        attn_processor.id_length = id_length_
+                        attn_processor.total_length = id_length_ + 1
+            
+            set_attention_processor(pipe.unet, id_length_, is_ipadapter=False)
+            pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+        else:
+            # SD 3.5 uses FlowMatchEulerDiscreteScheduler (already set in load_models)
+            pass
+        
         ##### ########################
-        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
         pipe.enable_freeu(s1=0.6, s2=0.4, b1=1.1, b2=1.2)
         cur_model_type = _sd_type + "-" + _model_type
         pipe.enable_vae_slicing()
         if device != "mps":
             pipe.enable_model_cpu_offload()
     else:
-        unet = pipe.unet
-        # unet.set_attn_processor(copy.deepcopy(attn_procs))
+        # Pipeline already loaded, just get the unet
+        if pipe is not None:
+            unet = pipe.unet
+        else:
+            raise gr.Error("Pipeline not loaded properly. Please try again.")
 
     load_chars = load_character_files_on_running(unet, character_files=_char_files)
 
@@ -992,7 +1073,7 @@ with gr.Blocks(css=css) as demo:
             with gr.Column(visible=True) as gen_prompt_vis:
                 sd_type = gr.Dropdown(
                     choices=list(models_dict.keys()),
-                    value="Unstable",
+                    value=list(models_dict.keys())[0],  # Use first available model
                     label="sd_type",
                     info="Select pretrained model",
                 )
@@ -1343,4 +1424,4 @@ with gr.Blocks(css=css) as demo:
     gr.Markdown(article)
 
 
-demo.launch(server_name="0.0.0.0", share=True)
+demo.launch(server_name="0.0.0.0", share=False)

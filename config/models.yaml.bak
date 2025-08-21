@@ -1,0 +1,31 @@
+# SDXL Models (UNet-based)
+Juggernaut:
+  path: "https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/resolve/main/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
+  single_files: true
+  use_safetensors: true
+  architecture: "sdxl"
+
+RealVision:
+  path: "SG161222/RealVisXL_V4.0"
+  single_files: false
+  use_safetensors: true
+  architecture: "sdxl"
+
+SDXL:
+  path: "stabilityai/stable-diffusion-xl-base-1.0"
+  single_files: false
+  use_safetensors: true
+  architecture: "sdxl"
+
+Unstable:
+  path: "stablediffusionapi/sdxl-unstable-diffusers-y"
+  single_files: false
+  use_safetensors: true
+  architecture: "sdxl"
+
+# SD 3.5 Models (MMDiT-based)
+SD3.5-Large-TensorRT:
+  path: "stabilityai/stable-diffusion-3.5-large-tensorrt"
+  single_files: false
+  use_safetensors: true
+  architecture: "sd3"

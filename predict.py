@@ -39,8 +39,8 @@ models_dict = {
     "RealVision": "SG161222/RealVisXL_V4.0",
     "Unstable": "stablediffusionapi/sdxl-unstable-diffusers-y",
 }
-# photomaker_path =  hf_hub_download(repo_id="TencentARC/PhotoMaker", filename="photomaker-v1.bin", repo_type="model")
-photomaker_path = f"{MODEL_CACHE}/PhotoMaker/photomaker-v1.bin"
+# photomaker_path =  hf_hub_download(repo_id="TencentARC/PhotoMaker-V2", filename="photomaker-v2.bin", repo_type="model")
+photomaker_path = f"{MODEL_CACHE}/PhotoMaker/photomaker-v2.bin"
 
 pipe_unstable = PhotoMakerStableDiffusionXLPipeline.from_pretrained(
     models_dict["Unstable"],
@@ -420,7 +420,7 @@ class Predictor(BasePredictor):
         if not os.path.exists(MODEL_CACHE):
             download_weights(MODEL_URL, MODEL_CACHE)
 
-        photomaker_path = f"{MODEL_CACHE}/PhotoMaker/photomaker-v1.bin"
+        photomaker_path = f"{MODEL_CACHE}/PhotoMaker/photomaker-v2.bin"
 
         self.sdxl_pipe_unstable = StableDiffusionXLPipeline.from_pretrained(
             f"{MODEL_CACHE}/Unstable/sdxl/stablediffusionapi/sdxl-unstable-diffusers-y",

@@ -1,19 +1,7 @@
-Juggernaut: 
-  path: "https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/blob/main/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
-  single_files: true   ### if true, is a civitai model
-  use_safetensors: true
-
-RealVision:
-  path: "SG161222/RealVisXL_V4.0"
+# SD 3.5 Models (MMDiT-based) - RTX 5090 Optimized
+SD3.5-Large-RTX5090:
+  path: "stabilityai/stable-diffusion-3.5-large-tensorrt"
   single_files: false
   use_safetensors: true
-
-SDXL:
-  path: "stabilityai/stable-diffusion-xl-base-1.0"
-  single_files: false
-  use_safetensors: true
-
-Unstable:
-  path: "stablediffusionapi/sdxl-unstable-diffusers-y"
-  single_files: false
-  use_safetensors: false
+  architecture: "sd3"
+  description: "TensorRT-optimized SD 3.5 with intelligent fallback to standard SD 3.5 + RTX 5090 Blackwell optimizations"
