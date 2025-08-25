@@ -67,6 +67,7 @@ class TensorRTSD35Pipeline:
                     'trt_fp16_enable': True if self.precision in ["fp8", "fp16"] else False,
                     'trt_engine_cache_enable': True,
                     'trt_timing_cache_enable': True,
+                    'trt_dla_core': 0,
                 }),
                 # CUDA provider as fallback
                 ('CUDAExecutionProvider', cuda_provider_options),
@@ -149,7 +150,7 @@ class TensorRTSD35Pipeline:
                 'trt_engine_cache_enable': True,
                 'trt_timing_cache_enable': True,
                 # RTX 5090 Blackwell optimizations  
-                'trt_dla_core': -1,  # Use GPU, not DLA
+                'trt_dla_core': 0,  # Use GPU, not DLA
             }),
             # Fallback to CUDA provider with basic settings
             ('CUDAExecutionProvider', {
@@ -220,7 +221,6 @@ class TensorRTSD35Pipeline:
         
         # RTX 5090 specific CUDA provider with better bfloat16 handling
         rtx_5090_providers = self._get_rtx_5090_providers()
-        fallback_providers = ['CPUExecutionProvider']
         
         try:
             # Try RTX 5090 optimized providers first
@@ -228,69 +228,57 @@ class TensorRTSD35Pipeline:
                 self.clip_l_session = ort.InferenceSession(clip_l_path, sess_options=self.session_options, providers=rtx_5090_providers)
             else:
                 self.clip_l_session = ort.InferenceSession(clip_l_path, sess_options=self.session_options, providers=self.providers)
+            logger.info("✅ CLIP-L loaded successfully")
         except Exception as e:
-            error_str = str(e)
-            if "bfloat16" in error_str or "Type Error" in error_str:
-                logger.warning(f"CLIP-L has bfloat16 compatibility issue on RTX 5090: {e}")
-                logger.info("Trying FP16 compatible CUDA provider...")
-                try:
-                    fp16_providers = self._get_fp16_cuda_providers()
-                    self.clip_l_session = ort.InferenceSession(clip_l_path, sess_options=self.session_options, providers=fp16_providers)
-                except Exception as e2:
-                    logger.warning(f"CLIP-L failed on CUDA entirely, using CPU: {e2}")
-                    self.clip_l_session = ort.InferenceSession(clip_l_path, sess_options=self.session_options, providers=fallback_providers)
-            elif "NOT_IMPLEMENTED" in error_str and "Add(" in error_str:
-                logger.error(f"CLIP-L ONNX model has unsupported operations: {e}")
-                logger.error("This TensorRT model may require a newer ONNX Runtime version or different CUDA compute capability")
-                logger.info("Trying CPU fallback for this component...")
-                self.clip_l_session = ort.InferenceSession(clip_l_path, sess_options=self.session_options, providers=fallback_providers)
-            else:
-                logger.warning(f"CLIP-L failed on CUDA, using CPU: {e}")
-                self.clip_l_session = ort.InferenceSession(clip_l_path, sess_options=self.session_options, providers=fallback_providers)
+            logger.error(f"CLIP-L failed to load: {e}")
+            raise RuntimeError(f"TensorRT CLIP-L failed to load") from e
         
         try:
             if self.is_rtx_5090:
                 self.clip_g_session = ort.InferenceSession(clip_g_path, sess_options=self.session_options, providers=rtx_5090_providers)
             else:
                 self.clip_g_session = ort.InferenceSession(clip_g_path, sess_options=self.session_options, providers=self.providers)
+            logger.info("✅ CLIP-G loaded successfully")
         except Exception as e:
-            if "bfloat16" in str(e) or "Type Error" in str(e):
-                logger.warning(f"CLIP-G has bfloat16 compatibility issue on RTX 5090: {e}")
-                try:
-                    fp16_providers = self._get_fp16_cuda_providers()
-                    self.clip_g_session = ort.InferenceSession(clip_g_path, sess_options=self.session_options, providers=fp16_providers)
-                except Exception as e2:
-                    logger.warning(f"CLIP-G failed on CUDA entirely, using CPU: {e2}")
-                    self.clip_g_session = ort.InferenceSession(clip_g_path, sess_options=self.session_options, providers=fallback_providers)
-            else:
-                logger.warning(f"CLIP-G failed on CUDA, using CPU: {e}")
-                self.clip_g_session = ort.InferenceSession(clip_g_path, sess_options=self.session_options, providers=fallback_providers)
+            logger.error(f"CLIP-G failed to load: {e}")
+            raise RuntimeError(f"TensorRT CLIP-G failed to load") from e
         
         try:
             if self.is_rtx_5090:
                 self.t5_session = ort.InferenceSession(t5_path, sess_options=self.session_options, providers=rtx_5090_providers)
             else:
                 self.t5_session = ort.InferenceSession(t5_path, sess_options=self.session_options, providers=self.providers)
+            logger.info("✅ T5 loaded successfully")
         except Exception as e:
-            if "bfloat16" in str(e) or "Type Error" in str(e):
-                logger.warning(f"T5 has bfloat16 compatibility issue on RTX 5090: {e}")
-                try:
-                    fp16_providers = self._get_fp16_cuda_providers()
-                    self.t5_session = ort.InferenceSession(t5_path, sess_options=self.session_options, providers=fp16_providers)
-                except Exception as e2:
-                    logger.warning(f"T5 failed on CUDA entirely, using CPU: {e2}")
-                    self.t5_session = ort.InferenceSession(t5_path, sess_options=self.session_options, providers=fallback_providers)
-            else:
-                logger.warning(f"T5 failed on CUDA, using CPU: {e}")
-                self.t5_session = ort.InferenceSession(t5_path, sess_options=self.session_options, providers=fallback_providers)
+            logger.error(f"T5 failed to load: {e}")
+            raise RuntimeError(f"TensorRT T5 failed to load") from e
     
     def _load_onnx_components(self):
         """Load ONNX sessions for transformer and VAE"""
         # Transformer (MMDiT)
-        if self.precision == "fp8":
+        # Check available precision directories
+        transformer_dir = os.path.join(self.onnx_dir, "transformer")
+        available_precisions = []
+        if os.path.exists(transformer_dir):
+            available_precisions = [d for d in os.listdir(transformer_dir) 
+                                   if os.path.isdir(os.path.join(transformer_dir, d))]
+            print(f"Available transformer precisions: {available_precisions}")
+        
+        # Map requested precision to actual directory
+        if self.precision == "fp8" and "fp8" in available_precisions:
             transformer_path = os.path.join(self.onnx_dir, "transformer", "fp8", "model_optimized.onnx")
-        else:
+        elif self.precision == "fp16" and "fp16" in available_precisions:
+            transformer_path = os.path.join(self.onnx_dir, "transformer", "fp16", "model_optimized.onnx")
+        elif "fp16" in available_precisions:
+            # Default to fp16 if available
+            transformer_path = os.path.join(self.onnx_dir, "transformer", "fp16", "model_optimized.onnx")
+            print(f"Using fp16 transformer (requested {self.precision} not available)")
+        elif "bf16" in available_precisions:
+            # Only use bf16 as last resort
             transformer_path = os.path.join(self.onnx_dir, "transformer", "bf16", "model_optimized.onnx")
+            print("WARNING: Only bf16 transformer available, may have compatibility issues")
+        else:
+            raise ValueError(f"No compatible transformer precision found in {transformer_dir}")
         
         # VAE
         vae_path = os.path.join(self.onnx_dir, "vae", "model_optimized.onnx")
@@ -299,16 +287,26 @@ class TensorRTSD35Pipeline:
         fallback_providers = ['CPUExecutionProvider']
         
         try:
+            logger.info(f"Loading transformer from: {transformer_path}")
             self.transformer_session = ort.InferenceSession(transformer_path, sess_options=self.session_options, providers=self.providers)
+            logger.info("✅ Transformer loaded successfully on GPU")
         except Exception as e:
-            logger.warning(f"Transformer failed on CUDA, using CPU: {e}")
-            self.transformer_session = ort.InferenceSession(transformer_path, sess_options=self.session_options, providers=fallback_providers)
+            error_str = str(e)
+            if "bfloat16" in error_str or "tensor(bfloat16)" in error_str:
+                logger.error(f"❌ Transformer has bfloat16 compatibility issue: {e}")
+                logger.error("This TensorRT model was compiled with bfloat16 which is not supported by your ONNX Runtime GPU provider")
+                logger.error("The model needs to be recompiled with FP16 or FP32 inputs for GPU compatibility")
+                raise RuntimeError("TensorRT model is incompatible - bfloat16 not supported by ONNX Runtime GPU provider") from e
+            else:
+                logger.error(f"Transformer failed to load: {e}")
+                raise RuntimeError(f"TensorRT transformer failed to load") from e
         
         try:
             self.vae_session = ort.InferenceSession(vae_path, sess_options=self.session_options, providers=self.providers)
+            logger.info("✅ VAE loaded successfully on GPU")
         except Exception as e:
-            logger.warning(f"VAE failed on CUDA, using CPU: {e}")
-            self.vae_session = ort.InferenceSession(vae_path, sess_options=self.session_options, providers=fallback_providers)
+            logger.error(f"VAE failed to load: {e}")
+            raise RuntimeError(f"TensorRT VAE failed to load") from e
     
     def encode_prompt(self, prompt: str, negative_prompt: str = "") -> Dict[str, torch.Tensor]:
         """Encode text prompt using all three text encoders"""
