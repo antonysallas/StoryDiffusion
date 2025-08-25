@@ -18,7 +18,8 @@ except ImportError:
     TensorRTSD35Pipeline = None
     TENSORRT_AVAILABLE = False
 import os
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub.utils import HfHubHTTPError
 
 def _is_tensorrt_model(path: str) -> bool:
     """
@@ -61,13 +62,17 @@ def _detect_rtx_5090() -> bool:
         print(f"Could not detect GPU type: {e}")
         return False
 
-def _resolve_tensorrt_model_path(model_name_or_path: str) -> str:
+def _resolve_tensorrt_model_path(model_name_or_path: str, auto_download: bool = True) -> str:
     """
     Resolve the actual local path for TensorRT models using HF_HOME
+    If not found locally and auto_download is True, attempt to download the model
     """
     # If it's already a local path, return it
     if os.path.isdir(model_name_or_path):
-        return model_name_or_path
+        if _is_tensorrt_model(model_name_or_path):
+            return model_name_or_path
+        else:
+            raise ValueError(f"Path {model_name_or_path} exists but does not contain a valid TensorRT model")
 
     # Get HuggingFace cache directory from environment
     hf_home = os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface'))
@@ -92,9 +97,69 @@ def _resolve_tensorrt_model_path(model_name_or_path: str) -> str:
                     print(f"Found TensorRT model at: {snapshot_path}")
                     return snapshot_path
 
-    # If not found locally, return the original path
-    print(f"TensorRT model not found in HF_HOME ({hub_cache_dir}), using: {model_name_or_path}")
-    return model_name_or_path
+    # If not found locally and auto_download is enabled, try to download
+    if auto_download:
+        print(f"TensorRT model not found in HF_HOME ({hub_cache_dir})")
+        print(f"Attempting to download TensorRT model: {model_name_or_path}")
+        try:
+            downloaded_path = download_tensorrt_model(model_name_or_path, cache_dir=hf_home)
+            return downloaded_path
+        except Exception as e:
+            print(f"Failed to download TensorRT model: {e}")
+            raise RuntimeError(f"TensorRT model '{model_name_or_path}' not found locally and download failed") from e
+    else:
+        # If not found locally, return the original path
+        print(f"TensorRT model not found in HF_HOME ({hub_cache_dir}), using: {model_name_or_path}")
+        return model_name_or_path
+
+def download_tensorrt_model(model_name: str, cache_dir: Optional[str] = None) -> str:
+    """
+    Download TensorRT model from HuggingFace Hub
+    
+    Args:
+        model_name: HuggingFace model name (e.g., "stabilityai/stable-diffusion-3.5-large-tensorrt")
+        cache_dir: Optional cache directory path
+    
+    Returns:
+        Local path to the downloaded model
+    """
+    try:
+        print(f"Downloading TensorRT model: {model_name}")
+        print("This may take several minutes depending on your internet connection...")
+        
+        # Use snapshot_download to get the entire model
+        local_path = snapshot_download(
+            repo_id=model_name,
+            cache_dir=cache_dir,
+            resume_download=True,
+            local_files_only=False
+        )
+        
+        # Validate that this is actually a TensorRT model
+        if not _is_tensorrt_model(local_path):
+            raise ValueError(f"Downloaded model at {local_path} does not appear to be a valid TensorRT model")
+        
+        print(f"✅ TensorRT model downloaded successfully to: {local_path}")
+        return local_path
+        
+    except HfHubHTTPError as e:
+        if e.response.status_code == 401:
+            print("❌ Authentication required to download this model.")
+            print("Please set up your HuggingFace token:")
+            print("1. Create a token at https://huggingface.co/settings/tokens")
+            print("2. Run: huggingface-cli login")
+            print("3. Or set HF_TOKEN environment variable")
+            raise RuntimeError("HuggingFace authentication required") from e
+        elif e.response.status_code == 403:
+            print("❌ Access denied. Please request access to the model:")
+            print(f"Visit https://huggingface.co/{model_name} and click 'Request access'")
+            raise RuntimeError(f"Access denied for model {model_name}") from e
+        else:
+            print(f"❌ HTTP error downloading model: {e}")
+            raise RuntimeError(f"Failed to download model {model_name}") from e
+    except Exception as e:
+        print(f"❌ Unexpected error downloading model: {e}")
+        raise RuntimeError(f"Failed to download model {model_name}") from e
 
 def get_models_dict():
     # 打开并读取YAML文件
@@ -147,8 +212,14 @@ def load_models(model_info, device, photomaker_path=None, enable_controlnet=Fals
                 # Start with bf16 precision for better compatibility
                 precision = "bf16"
 
-                # Resolve the actual local path for TensorRT models
-                actual_model_path = _resolve_tensorrt_model_path(path)
+                # Resolve the actual local path for TensorRT models (with auto-download)
+                try:
+                    actual_model_path = _resolve_tensorrt_model_path(path, auto_download=True)
+                except Exception as e:
+                    print(f"Failed to resolve/download TensorRT model: {e}")
+                    print("Falling back to standard SD 3.5 pipeline")
+                    is_tensorrt = False
+                    actual_model_path = None
 
                 # Try different precisions optimized for RTX 5090
                 is_rtx_5090 = _detect_rtx_5090()
@@ -164,20 +235,21 @@ def load_models(model_info, device, photomaker_path=None, enable_controlnet=Fals
                     precisions_to_try = ["bf16"]
 
                 pipe = None
-                for prec in precisions_to_try:
-                    try:
-                        print(f"Attempting to load with {prec} precision...")
-                        pipe = TensorRTSD35Pipeline(
-                            model_path=actual_model_path,
-                            precision=prec,
-                            device=device,
-                            torch_dtype=torch.float16 if prec == "fp8" else dtype  # Use fp16 for fp8 models
-                        )
-                        print(f"✓ TensorRT SD 3.5 pipeline loaded with {prec} precision")
-                        break
-                    except Exception as e:
-                        print(f"✗ Failed with {prec} precision: {e}")
-                        continue
+                if actual_model_path and is_tensorrt:  # Only try TensorRT if we have a valid model path
+                    for prec in precisions_to_try:
+                        try:
+                            print(f"Attempting to load with {prec} precision...")
+                            pipe = TensorRTSD35Pipeline(
+                                model_path=actual_model_path,
+                                precision=prec,
+                                device=device,
+                                torch_dtype=torch.float16 if prec == "fp8" else dtype  # Use fp16 for fp8 models
+                            )
+                            print(f"✓ TensorRT SD 3.5 pipeline loaded with {prec} precision")
+                            break
+                        except Exception as e:
+                            print(f"✗ Failed with {prec} precision: {e}")
+                            continue
 
                 if pipe is None:
                     print("Failed to load TensorRT pipeline with any precision")
@@ -185,9 +257,19 @@ def load_models(model_info, device, photomaker_path=None, enable_controlnet=Fals
                     is_tensorrt = False
 
             if not is_tensorrt or not TENSORRT_AVAILABLE:
-                # Don't fallback - we want to fix the TensorRT model
+                # If TensorRT was requested but failed to load, provide helpful guidance
                 if "tensorrt" in path.lower():
-                    raise ValueError(f"TensorRT model '{path}' failed to load. Please check TensorRT installation and model compatibility with RTX 5090.")
+                    if not TENSORRT_AVAILABLE:
+                        print("❌ TensorRT pipeline not available. Missing dependencies or import failed.")
+                        print("Fallback to standard SD 3.5 pipeline will be used.")
+                        is_tensorrt = False  # Allow fallback
+                    else:
+                        print("❌ TensorRT model failed to load - this usually means:")
+                        print("1. Model not downloaded yet (will be attempted automatically)")
+                        print("2. HuggingFace authentication required")
+                        print("3. Model access not granted")
+                        print("Fallback to standard SD 3.5 pipeline will be used.")
+                        is_tensorrt = False  # Allow fallback instead of raising exception
 
                 # Check if ControlNet should be enabled for SD 3.5
                 controlnet_sd3 = None

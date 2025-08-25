@@ -3,5 +3,6 @@ SD3.5-Large-RTX5090:
   path: "stabilityai/stable-diffusion-3.5-large-tensorrt"
   single_files: false
   use_safetensors: true
+  model_type: "original"
   architecture: "sd3"
   description: "TensorRT-optimized SD 3.5 with intelligent fallback to standard SD 3.5 + RTX 5090 Blackwell optimizations"
